@@ -27,6 +27,13 @@ const os   = require("os");
 const HOME       = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
 const STATE_DIR  = path.join(HOME, "state", "token-meter");
 const SESSIONS   = path.join(HOME, "session-state");
+const LOGS_DIR   = path.join(HOME, "logs");
+const TELEMETRY_CACHE = path.join(STATE_DIR, "telemetry-cache.json");
+
+// Only scan process logs touched in the last N days (cuts cold-start cost).
+const LOG_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
+// Bound the per-session list of "seen event IDs" so the cache file can't grow unboundedly.
+const MAX_SEEN_EVENT_IDS = 10000;
 
 function safeMain() {
   let hookName = "?";
@@ -138,14 +145,192 @@ function readJsonl(filePath) {
 
 function n(v) { return typeof v === "number" && isFinite(v) ? v : 0; }
 
-function aggregate(events) {
+// ---------------------------------------------------------------------------
+// Telemetry-log parsing
+//
+// Copilot CLI writes one debug log per process to `~/.copilot/logs/process-*.log`.
+// Among the chatter there are full `[Telemetry] cli.telemetry:` blocks of the
+// form:
+//
+//     [Telemetry] cli.telemetry:
+//     {
+//       "kind": "assistant_usage",
+//       "properties": { "event_id": "...", "model": "...", "api_call_id": "..." },
+//       "metrics": { "input_tokens": 0, "output_tokens": 102, "cache_read_tokens": ...,
+//                    "cache_write_tokens": ..., "reasoning_tokens": 0, "cost": 45,
+//                    "duration": 4944, ... },
+//       "session_id": "<sessionId>",
+//       ...
+//     }
+//
+// These blocks are the real source of truth for input / output / cache /
+// reasoning / cost. The per-session `events.jsonl` only carries the
+// message-level `outputTokens`, so we merge the two: telemetry for token /
+// cost totals, events.jsonl for turn / tool / message activity.
+//
+// We cache a (logPath -> byteOffset) map per session in
+// `~/.copilot/state/token-meter/telemetry-cache.json` so we only ever read the
+// *new* tail of each log, even though logs grow large (10s of MB).
+// We also remember the set of `event_id`s we've already accounted for so the
+// same usage event isn't double-counted across overlapping cache writes.
+// ---------------------------------------------------------------------------
+
+function listProcessLogs() {
+  if (!fs.existsSync(LOGS_DIR)) return [];
+  const cutoff = Date.now() - LOG_LOOKBACK_MS;
+  const out = [];
+  for (const name of fs.readdirSync(LOGS_DIR)) {
+    if (!name.startsWith("process-") || !name.endsWith(".log")) continue;
+    const full = path.join(LOGS_DIR, name);
+    try {
+      const st = fs.statSync(full);
+      if (st.mtimeMs >= cutoff) out.push({ path: full, size: st.size, mtimeMs: st.mtimeMs });
+    } catch (_) {}
+  }
+  return out;
+}
+
+function loadTelemetryCache() {
+  try {
+    const c = JSON.parse(fs.readFileSync(TELEMETRY_CACHE, "utf8"));
+    if (c && c.schema === 1 && c.sessions) return c;
+  } catch (_) {}
+  return { schema: 1, sessions: {} };
+}
+
+function saveTelemetryCache(cache) {
+  try { writeAtomic(TELEMETRY_CACHE, JSON.stringify(cache)); } catch (_) {}
+}
+
+// Scan a buffer of log text starting from offset 0, extracting all
+// `[Telemetry] cli.telemetry: { ... }` JSON blocks that belong to `sessionId`
+// and whose event_id isn't already in `seen`. Returns the records and the
+// byte offset up to which we *fully* parsed (we never advance past an
+// incomplete block, so the next pass can re-read it once it's flushed).
+function parseTelemetryBlocks(text, sessionId, seen) {
+  const HEADER = "[Telemetry] cli.telemetry:\n";
+  const records = [];
+  let i = 0;
+  let lastCommittedEnd = 0;
+
+  while (true) {
+    const headerIdx = text.indexOf(HEADER, i);
+    if (headerIdx === -1) {
+      lastCommittedEnd = text.length;
+      break;
+    }
+    let braceStart = headerIdx + HEADER.length;
+    while (braceStart < text.length && text[braceStart] !== "{") braceStart++;
+    if (braceStart >= text.length) {
+      // Header found at the very tail; wait for the next pass to read more.
+      break;
+    }
+
+    let depth = 0;
+    let j = braceStart;
+    let inString = false;
+    let escape = false;
+    let blockEnd = -1;
+    while (j < text.length) {
+      const c = text[j];
+      if (inString) {
+        if (escape) escape = false;
+        else if (c === "\\") escape = true;
+        else if (c === '"') inString = false;
+      } else {
+        if (c === '"') inString = true;
+        else if (c === "{") depth++;
+        else if (c === "}") {
+          depth--;
+          if (depth === 0) { blockEnd = j; break; }
+        }
+      }
+      j++;
+    }
+    if (blockEnd === -1) break; // incomplete block — bail, retry next pass
+
+    const block = text.slice(braceStart, blockEnd + 1);
+    try {
+      const obj = JSON.parse(block);
+      if (obj && obj.kind === "assistant_usage" && obj.session_id === sessionId) {
+        const eid = obj.properties && obj.properties.event_id;
+        if (eid && !seen.has(eid)) {
+          seen.add(eid);
+          records.push({
+            event_id:        eid,
+            model:           (obj.properties && obj.properties.model) || null,
+            api_call_id:     (obj.properties && obj.properties.api_call_id) || null,
+            provider_call_id:(obj.properties && obj.properties.provider_call_id) || null,
+            interaction_id:  (obj.properties && obj.properties.interaction_id) || null,
+            initiator:       (obj.properties && obj.properties.initiator) || null,
+            reasoning_effort:(obj.properties && obj.properties.reasoning_effort) || null,
+            metrics:         obj.metrics || {},
+            created_at:      obj.created_at || null,
+          });
+        }
+      } else if (obj && obj.kind === "copilot_user_info" && obj.session_id === sessionId) {
+        // Stash latest quota snapshot too — handy for the watcher.
+        records.push({ __kind: "quota", metrics: obj.metrics || {}, properties: obj.properties || {} });
+      }
+    } catch (_) { /* malformed block — skip and continue */ }
+
+    i = blockEnd + 1;
+    lastCommittedEnd = i;
+  }
+
+  return { records, committedEnd: lastCommittedEnd };
+}
+
+function loadTelemetryUsage(sessionId) {
+  if (!sessionId) return { usage: [], quota: null };
+  const cache = loadTelemetryCache();
+  if (!cache.sessions[sessionId]) {
+    cache.sessions[sessionId] = { logs: {}, seenEventIds: [], usage: [], quota: null };
+  }
+  const sess = cache.sessions[sessionId];
+  const seen = new Set(sess.seenEventIds);
+
+  for (const log of listProcessLogs()) {
+    const prev = sess.logs[log.path] || { offset: 0 };
+    if (log.size <= prev.offset) continue;
+
+    let fd;
+    try { fd = fs.openSync(log.path, "r"); } catch (_) { continue; }
+    try {
+      const len = log.size - prev.offset;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, prev.offset);
+      const text = buf.toString("utf8");
+      const { records, committedEnd } = parseTelemetryBlocks(text, sessionId, seen);
+
+      sess.logs[log.path] = { offset: prev.offset + committedEnd, mtimeMs: log.mtimeMs };
+      for (const r of records) {
+        if (r.__kind === "quota") sess.quota = r;
+        else sess.usage.push(r);
+      }
+    } finally {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+
+  sess.seenEventIds = Array.from(seen).slice(-MAX_SEEN_EVENT_IDS);
+  saveTelemetryCache(cache);
+  return { usage: sess.usage, quota: sess.quota };
+}
+
+
+
+function aggregate(events, telemetry) {
+  telemetry = telemetry || { usage: [], quota: null };
+
   const totals = {
     inputTokens:        0,
     outputTokens:       0,
     cacheReadTokens:    0,
     cacheWriteTokens:   0,
-    reasoningTokens:    0, // derived from message.outputTokens when no usage event
+    reasoningTokens:    0,
     cost:               0,
+    durationMs:         0,
     apiCalls:           0,
     turns:              0,
     toolCalls:          0,
@@ -167,6 +352,7 @@ function aggregate(events) {
         turnId, model: model || lastModel || "unknown",
         inputTokens: 0, outputTokens: 0,
         cacheReadTokens: 0, cacheWriteTokens: 0,
+        reasoningTokens: 0,
         cost: 0, durationMs: 0,
         toolCalls: 0, apiCalls: 0,
         startedAt: null, endedAt: null,
@@ -174,6 +360,12 @@ function aggregate(events) {
     }
     return perTurn[turnIdx[turnId]];
   }
+
+  // ── Map provider/api-call IDs back to the turn that produced them so the
+  //    telemetry usage records can be billed to the right turn bucket.
+  //    `assistant.message.requestId` matches `assistant_usage.provider_call_id`
+  //    in the telemetry block.
+  const requestIdToTurn = Object.create(null);
 
   for (const ev of events) {
     if (!ev || typeof ev !== "object") continue;
@@ -191,13 +383,14 @@ function aggregate(events) {
         totals.userMessages++;
         break;
 
-      case "assistant.turn_start":
+      case "assistant.turn_start": {
         currentTurnId = d.turnId != null ? String(d.turnId) : null;
         const ts0 = ensureTurn(currentTurnId, lastModel);
         if (ts0) ts0.startedAt = ts;
         break;
+      }
 
-      case "assistant.turn_end":
+      case "assistant.turn_end": {
         const te = ensureTurn(d.turnId != null ? String(d.turnId) : currentTurnId, lastModel);
         if (te) {
           te.endedAt = ts;
@@ -205,31 +398,28 @@ function aggregate(events) {
         }
         totals.turns++;
         break;
+      }
 
-      case "tool.execution_start":
+      case "tool.execution_start": {
         totals.toolCalls++;
         const tt = ensureTurn(currentTurnId, lastModel);
         if (tt) tt.toolCalls++;
         break;
+      }
 
       case "assistant.message": {
         totals.assistantMessages++;
         if (d.model) lastModel = d.model;
-        // Pre-usage fallback: only `outputTokens` is on the message itself,
-        // and even that can be null while a stream is in flight.
-        const turn = ensureTurn(d.turnId != null ? String(d.turnId) : currentTurnId, d.model);
-        const m = d.model || lastModel || "unknown";
-        const bucket = perModel[m] || (perModel[m] = bucketInit());
-        // Only count the message-level outputTokens when no assistant.usage
-        // event has provided it (we de-dup below by messageId/apiCallId).
-        if (n(d.outputTokens) > 0 && !d.__usageAccountedFor) {
-          // Tag the event in-memory so a later usage event can override.
-          d.__messageOutputTokens = n(d.outputTokens);
+        const turnId = d.turnId != null ? String(d.turnId) : currentTurnId;
+        ensureTurn(turnId, d.model);
+        if (d.requestId && turnId != null) {
+          requestIdToTurn[d.requestId] = turnId;
         }
         break;
       }
 
       case "assistant.usage": {
+        // Reserved for future CLI builds that surface usage in events.jsonl.
         if (d.model) lastModel = d.model;
         const m = d.model || lastModel || "unknown";
         const bucket = perModel[m] || (perModel[m] = bucketInit());
@@ -237,6 +427,7 @@ function aggregate(events) {
         bucket.outputTokens     += n(d.outputTokens);
         bucket.cacheReadTokens  += n(d.cacheReadTokens);
         bucket.cacheWriteTokens += n(d.cacheWriteTokens);
+        bucket.reasoningTokens  += n(d.reasoningTokens);
         bucket.cost             += n(d.cost);
         bucket.apiCalls         += 1;
         bucket.durationMs       += n(d.duration);
@@ -245,7 +436,9 @@ function aggregate(events) {
         totals.outputTokens     += n(d.outputTokens);
         totals.cacheReadTokens  += n(d.cacheReadTokens);
         totals.cacheWriteTokens += n(d.cacheWriteTokens);
+        totals.reasoningTokens  += n(d.reasoningTokens);
         totals.cost             += n(d.cost);
+        totals.durationMs       += n(d.duration);
         totals.apiCalls         += 1;
 
         const turn = ensureTurn(currentTurnId, m);
@@ -254,12 +447,12 @@ function aggregate(events) {
           turn.outputTokens     += n(d.outputTokens);
           turn.cacheReadTokens  += n(d.cacheReadTokens);
           turn.cacheWriteTokens += n(d.cacheWriteTokens);
+          turn.reasoningTokens  += n(d.reasoningTokens);
           turn.cost             += n(d.cost);
           turn.apiCalls         += 1;
           turn.model = m;
         }
 
-        // Capture latest quota snapshot so external dashboards can show it.
         if (d.quotaSnapshots && typeof d.quotaSnapshots === "object") {
           bucket.latestQuota = d.quotaSnapshots;
         }
@@ -268,9 +461,55 @@ function aggregate(events) {
     }
   }
 
-  // For sessions that don't emit assistant.usage (e.g., older CLI versions or
-  // BYOK providers), fall back to message-level outputTokens. Populate both
-  // session totals and per-turn buckets so the dashboard stays useful.
+  // ── Fold in telemetry-log assistant_usage records (the real source of truth
+  //    for input/cache/reasoning/cost on current Copilot CLI builds, which
+  //    don't write `assistant.usage` events to events.jsonl).
+  const haveTelemetry = telemetry.usage && telemetry.usage.length > 0;
+  if (haveTelemetry) {
+    for (const r of telemetry.usage) {
+      const m  = r.model || lastModel || "unknown";
+      if (r.model) lastModel = r.model;
+      const mt = r.metrics || {};
+      const bucket = perModel[m] || (perModel[m] = bucketInit());
+      bucket.inputTokens      += n(mt.input_tokens);
+      bucket.outputTokens     += n(mt.output_tokens);
+      bucket.cacheReadTokens  += n(mt.cache_read_tokens);
+      bucket.cacheWriteTokens += n(mt.cache_write_tokens);
+      bucket.reasoningTokens  += n(mt.reasoning_tokens);
+      bucket.cost             += n(mt.cost);
+      bucket.apiCalls         += 1;
+      bucket.durationMs       += n(mt.duration);
+
+      totals.inputTokens      += n(mt.input_tokens);
+      totals.outputTokens     += n(mt.output_tokens);
+      totals.cacheReadTokens  += n(mt.cache_read_tokens);
+      totals.cacheWriteTokens += n(mt.cache_write_tokens);
+      totals.reasoningTokens  += n(mt.reasoning_tokens);
+      totals.cost             += n(mt.cost);
+      totals.durationMs       += n(mt.duration);
+      totals.apiCalls         += 1;
+
+      const turnId = r.provider_call_id && requestIdToTurn[r.provider_call_id];
+      if (turnId != null) {
+        const turn = ensureTurn(turnId, m);
+        if (turn) {
+          turn.inputTokens      += n(mt.input_tokens);
+          turn.outputTokens     += n(mt.output_tokens);
+          turn.cacheReadTokens  += n(mt.cache_read_tokens);
+          turn.cacheWriteTokens += n(mt.cache_write_tokens);
+          turn.reasoningTokens  += n(mt.reasoning_tokens);
+          turn.cost             += n(mt.cost);
+          turn.durationMs       += n(mt.duration);
+          turn.apiCalls         += 1;
+          turn.model = m;
+        }
+      }
+    }
+  }
+
+  // ── Fallback: when neither assistant.usage events nor telemetry records
+  //    are available (e.g., logs cleaned up, fresh session before first
+  //    flush), fall back to message-level outputTokens for the output count.
   if (totals.outputTokens === 0) {
     let fallbackTurn = null;
     for (const ev of events) {
@@ -292,20 +531,24 @@ function aggregate(events) {
     }
   }
 
-  // Clamp pathological durations (e.g., from /undo rewinding the timeline).
   for (const t of perTurn) {
     if (t.durationMs < 0) t.durationMs = 0;
   }
 
-  totals.totalTokens = totals.inputTokens + totals.outputTokens;
+  totals.totalTokens  = totals.inputTokens + totals.outputTokens;
   totals.billedTokens =
     totals.inputTokens + totals.outputTokens +
     totals.cacheWriteTokens + Math.floor(totals.cacheReadTokens / 10);
+  totals.promptTokens = // what we actually sent on the wire
+    totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
 
   return {
     totals, perModel, perTurn,
     sessionFirstTs: firstTs, sessionLastTs: lastTs,
     lastModel,
+    telemetryAvailable: haveTelemetry,
+    telemetryRecords:   haveTelemetry ? telemetry.usage.length : 0,
+    quota:              telemetry.quota || null,
   };
 }
 
@@ -313,6 +556,7 @@ function bucketInit() {
   return {
     inputTokens: 0, outputTokens: 0,
     cacheReadTokens: 0, cacheWriteTokens: 0,
+    reasoningTokens: 0,
     cost: 0, apiCalls: 0, durationMs: 0,
     latestQuota: null,
   };
@@ -333,7 +577,7 @@ function formatTitle(agg, sessionId) {
   ];
   if (t.cacheReadTokens)  parts.push(`⟳${formatTokens(t.cacheReadTokens)}`);
   if (t.cacheWriteTokens) parts.push(`⊕${formatTokens(t.cacheWriteTokens)}`);
-  if (t.cost > 0)         parts.push(`$${t.cost.toFixed(4)}`);
+  if (t.reasoningTokens)  parts.push(`🧠${formatTokens(t.reasoningTokens)}`);
   parts.push(`${t.turns}t/${t.toolCalls}🔧`);
   return `copilot[${model.replace(/^claude-/, "")}] ${parts.join(" ")}`;
 }
@@ -366,7 +610,7 @@ function writeTitleBar(text) {
 
 function buildStatusJson(agg, sessionId, eventsPath) {
   return {
-    schema:    1,
+    schema:    2,
     sessionId,
     eventsPath,
     updatedAt: new Date().toISOString(),
@@ -374,6 +618,9 @@ function buildStatusJson(agg, sessionId, eventsPath) {
     totals:    agg.totals,
     perModel:  agg.perModel,
     perTurn:   agg.perTurn.slice(-50),
+    quota:     agg.quota,
+    telemetryAvailable: agg.telemetryAvailable,
+    telemetryRecords:   agg.telemetryRecords,
     title:     formatTitle(agg, sessionId),
   };
 }
@@ -397,16 +644,16 @@ function main() {
     return;
   }
 
-  const events = readJsonl(eventsPath);
-  const agg    = aggregate(events);
-  const status = buildStatusJson(agg, sessionId, eventsPath);
+  const events    = readJsonl(eventsPath);
+  const telemetry = loadTelemetryUsage(sessionId);
+  const agg       = aggregate(events, telemetry);
+  const status    = buildStatusJson(agg, sessionId, eventsPath);
 
   fs.mkdirSync(STATE_DIR, { recursive: true });
   writeAtomic(path.join(STATE_DIR, sessionId + ".json"), JSON.stringify(status, null, 2));
   writeAtomic(path.join(STATE_DIR, "latest.json"),       JSON.stringify(status, null, 2));
   writeAtomic(path.join(STATE_DIR, "current"),           sessionId + "\n");
 
-  // Title bar update.
   writeTitleBar(status.title);
 
   if (args.print) {

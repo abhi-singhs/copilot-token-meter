@@ -80,7 +80,15 @@ function fmtMs(ms) {
   const m = Math.floor(ms / 60_000), s = Math.floor((ms % 60_000) / 1000);
   return `${m}m${s.toString().padStart(2, "0")}s`;
 }
-function fmtCost(d) { return d ? "$" + d.toFixed(4) : "$0"; }
+function fmtCost(units) {
+  if (!units) return "—";
+  // The CLI exposes `cost` in an internal unit (not USD) — possibly
+  // nano-AIU or basis points. We show it raw with a "cu" suffix and let
+  // the user cross-reference against `/usage` for real money.
+  if (units >= 1_000_000) return (units / 1_000_000).toFixed(2) + "M cu";
+  if (units >= 1_000)     return (units / 1_000).toFixed(1)     + "k cu";
+  return units + " cu";
+}
 function pad(s, w)  { s = String(s); return s.length >= w ? s : s + " ".repeat(w - s.length); }
 
 function renderStatusLine(st) {
@@ -108,14 +116,23 @@ function renderSummary(st) {
   const lines = [];
   lines.push(c("bold", "Copilot session ") + c("gray", st.sessionId));
   lines.push(c("gray", "Updated " + new Date(st.updatedAt).toLocaleString() + "  •  model: ") + (st.model || "?"));
+  if (st.telemetryAvailable) {
+    lines.push(c("gray", "Source: telemetry log (" + (st.telemetryRecords||0) + " API calls observed)"));
+  } else {
+    lines.push(c("yel",  "Source: events.jsonl only (input / cache / cost unavailable in this CLI build)"));
+  }
   lines.push("");
 
   lines.push(c("bold", "Tokens"));
-  lines.push("  " + pad("input",         18) + c("cyan",  fmt(t.inputTokens).padStart(10)) + "  " + c("gray", t.inputTokens.toLocaleString()));
-  lines.push("  " + pad("output",        18) + c("green", fmt(t.outputTokens).padStart(10)) + "  " + c("gray", t.outputTokens.toLocaleString()));
-  lines.push("  " + pad("cache read",    18) + c("blue",  fmt(t.cacheReadTokens).padStart(10)) + "  " + c("gray", t.cacheReadTokens.toLocaleString()));
+  lines.push("  " + pad("input",         18) + c("cyan",  fmt(t.inputTokens).padStart(10))      + "  " + c("gray", t.inputTokens.toLocaleString()));
+  lines.push("  " + pad("output",        18) + c("green", fmt(t.outputTokens).padStart(10))     + "  " + c("gray", t.outputTokens.toLocaleString()));
+  lines.push("  " + pad("cache read",    18) + c("blue",  fmt(t.cacheReadTokens).padStart(10))  + "  " + c("gray", t.cacheReadTokens.toLocaleString()));
   lines.push("  " + pad("cache write",   18) + c("mag",   fmt(t.cacheWriteTokens).padStart(10)) + "  " + c("gray", t.cacheWriteTokens.toLocaleString()));
-  lines.push("  " + pad("total billed*", 18) + c("yel",   fmt(t.billedTokens || 0).padStart(10)) + "  " + c("gray", (t.billedTokens || 0).toLocaleString()));
+  if ((t.reasoningTokens || 0) > 0) {
+    lines.push("  " + pad("reasoning",   18) + c("mag",   fmt(t.reasoningTokens).padStart(10))  + "  " + c("gray", t.reasoningTokens.toLocaleString()));
+  }
+  lines.push("  " + pad("prompt (wire)", 18) + c("yel",   fmt(t.promptTokens || 0).padStart(10))+ "  " + c("gray", (t.promptTokens || 0).toLocaleString()));
+  lines.push("  " + pad("total billed*", 18) + c("yel",   fmt(t.billedTokens || 0).padStart(10))+ "  " + c("gray", (t.billedTokens || 0).toLocaleString()));
   lines.push("");
 
   lines.push(c("bold", "Activity"));
@@ -123,9 +140,8 @@ function renderSummary(st) {
   lines.push("  " + pad("tool calls",    18) + String(t.toolCalls).padStart(10));
   lines.push("  " + pad("user messages", 18) + String(t.userMessages).padStart(10));
   lines.push("  " + pad("API calls",     18) + String(t.apiCalls).padStart(10));
-  if (t.cost > 0) {
-    lines.push("  " + pad("cost",        18) + c("yel", fmtCost(t.cost).padStart(10)));
-  }
+  if (t.cost > 0)         lines.push("  " + pad("cost",       18) + c("yel", fmtCost(t.cost).padStart(10)));
+  if (t.durationMs > 0)   lines.push("  " + pad("API time",   18) + fmtMs(t.durationMs).padStart(10));
   lines.push("");
 
   const models = Object.entries(st.perModel || {});
@@ -136,6 +152,7 @@ function renderSummary(st) {
         + c("cyan",  "↑" + fmt(b.inputTokens).padStart(8))
         + c("green", " ↓" + fmt(b.outputTokens).padStart(8))
         + c("blue",  " ⟳" + fmt(b.cacheReadTokens).padStart(8))
+        + c("mag",   " ⊕" + fmt(b.cacheWriteTokens).padStart(8))
         + c("gray",  " " + b.apiCalls + " calls"));
     }
     lines.push("");
@@ -148,13 +165,32 @@ function renderSummary(st) {
         + c("cyan",  "↑" + fmt(turn.inputTokens).padStart(7))
         + c("green", " ↓" + fmt(turn.outputTokens).padStart(7))
         + c("blue",  " ⟳" + fmt(turn.cacheReadTokens).padStart(7))
+        + c("mag",   " ⊕" + fmt(turn.cacheWriteTokens).padStart(7))
         + c("gray",  " " + turn.toolCalls + "🔧 " + fmtMs(turn.durationMs).padStart(7))
         + "  " + c("gray", turn.model.replace(/^claude-/, "")));
     }
     lines.push("");
   }
 
+  if (st.quota && st.quota.metrics) {
+    const q = st.quota.metrics;
+    lines.push(c("bold", "Quota") + c("gray", "  (" + (st.quota.properties && st.quota.properties.copilot_plan || "?") + " plan)"));
+    if (typeof q.premium_interactions_remaining === "number") {
+      lines.push("  " + pad("premium interactions", 22) + (q.premium_interactions_remaining + " / " + (q.premium_interactions_entitlement || "?")));
+    }
+    if (typeof q.chat_remaining === "number") {
+      lines.push("  " + pad("chat", 22) + (q.chat_remaining + " / " + (q.chat_entitlement || "?")));
+    }
+    if (typeof q.completions_remaining === "number") {
+      lines.push("  " + pad("completions", 22) + (q.completions_remaining + " / " + (q.completions_entitlement || "?")));
+    }
+    lines.push("");
+  }
+
   lines.push(c("gray", "* Billed tokens = input + output + cache_write + cache_read/10 (per Anthropic pricing)."));
+  if (t.cost > 0) {
+    lines.push(c("gray", "  Cost shown in raw CLI units (cu); use `/usage` inside copilot for premium-request accounting."));
+  }
   console.log(lines.join("\n"));
 }
 
