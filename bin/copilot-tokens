@@ -80,15 +80,6 @@ function fmtMs(ms) {
   const m = Math.floor(ms / 60_000), s = Math.floor((ms % 60_000) / 1000);
   return `${m}m${s.toString().padStart(2, "0")}s`;
 }
-function fmtCost(units) {
-  if (!units) return "—";
-  // The CLI exposes `cost` in an internal unit (not USD) — possibly
-  // nano-AIU or basis points. We show it raw with a "cu" suffix and let
-  // the user cross-reference against `/usage` for real money.
-  if (units >= 1_000_000) return (units / 1_000_000).toFixed(2) + "M cu";
-  if (units >= 1_000)     return (units / 1_000).toFixed(1)     + "k cu";
-  return units + " cu";
-}
 function pad(s, w)  { s = String(s); return s.length >= w ? s : s + " ".repeat(w - s.length); }
 
 function renderStatusLine(st) {
@@ -102,7 +93,6 @@ function renderStatusLine(st) {
     c("green", "↓" + fmt(t.outputTokens) + "out"),
     c("blue",  "⟳" + fmt(t.cacheReadTokens) + "cr"),
     c("mag",   "⊕" + fmt(t.cacheWriteTokens) + "cw"),
-    c("yel",   fmtCost(t.cost)),
     c("gray",  t.turns + "t/" + t.toolCalls + "🔧"),
   ].join(" ");
 }
@@ -140,7 +130,6 @@ function renderSummary(st) {
   lines.push("  " + pad("tool calls",    18) + String(t.toolCalls).padStart(10));
   lines.push("  " + pad("user messages", 18) + String(t.userMessages).padStart(10));
   lines.push("  " + pad("API calls",     18) + String(t.apiCalls).padStart(10));
-  if (t.cost > 0)         lines.push("  " + pad("cost",       18) + c("yel", fmtCost(t.cost).padStart(10)));
   if (t.durationMs > 0)   lines.push("  " + pad("API time",   18) + fmtMs(t.durationMs).padStart(10));
   lines.push("");
 
@@ -188,9 +177,6 @@ function renderSummary(st) {
   }
 
   lines.push(c("gray", "* Billed tokens = input + output + cache_write + cache_read/10 (per Anthropic pricing)."));
-  if (t.cost > 0) {
-    lines.push(c("gray", "  Cost shown in raw CLI units (cu); use `/usage` inside copilot for premium-request accounting."));
-  }
   console.log(lines.join("\n"));
 }
 
@@ -235,7 +221,7 @@ function cmdTop() {
     rows.push({
       id, model: st.model, in: t.inputTokens, out: t.outputTokens,
       cr: t.cacheReadTokens, cw: t.cacheWriteTokens,
-      cost: t.cost, turns: t.turns, tools: t.toolCalls,
+      turns: t.turns, tools: t.toolCalls,
       mtime: fs.statSync(ev).mtimeMs,
     });
   }
@@ -244,7 +230,7 @@ function cmdTop() {
     pad("session", 38) + pad("model", 22) +
     pad("↑in", 10) + pad("↓out", 10) +
     pad("⟳read", 10) + pad("⊕write", 10) +
-    pad("turns", 7) + pad("tools", 7) + pad("cost", 10)));
+    pad("turns", 7) + pad("tools", 7)));
   for (const r of rows.slice(0, 20)) {
     console.log(
       pad(r.id, 38) + pad((r.model || "?").replace(/^claude-/, ""), 22) +
@@ -252,8 +238,7 @@ function cmdTop() {
       pad(c("green", fmt(r.out)), 10) +
       pad(c("blue",  fmt(r.cr)),  10) +
       pad(c("mag",   fmt(r.cw)),  10) +
-      pad(String(r.turns), 7) + pad(String(r.tools), 7) +
-      pad(c("yel", fmtCost(r.cost)), 10));
+      pad(String(r.turns), 7) + pad(String(r.tools), 7));
   }
 }
 
