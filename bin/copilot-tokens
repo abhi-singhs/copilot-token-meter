@@ -1,0 +1,259 @@
+#!/usr/bin/env node
+// copilot-tokens: companion CLI for the copilot-token-meter plugin.
+//
+//   copilot-tokens status     Print a one-line summary (default).
+//   copilot-tokens summary    Print a multi-line breakdown.
+//   copilot-tokens watch      Live tail; refreshes every second.
+//   copilot-tokens top        Top sessions by total tokens, all time.
+//   copilot-tokens json       Dump the raw status JSON (for scripting).
+//   copilot-tokens recompute  Re-aggregate the current session right now.
+//
+// Reads ~/.copilot/state/token-meter/latest.json which is kept up-to-date
+// by the in-process hooks; if that file is stale or missing, falls back
+// to scanning the most recent ~/.copilot/session-state/<id>/events.jsonl
+// directly so the CLI is useful even when the plugin's hooks haven't run.
+
+"use strict";
+
+const fs   = require("fs");
+const path = require("path");
+const os   = require("os");
+const { spawnSync } = require("child_process");
+
+const HOME      = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
+const STATE_DIR = path.join(HOME, "state", "token-meter");
+const SESSIONS  = path.join(HOME, "session-state");
+const METER     = path.join(__dirname, "token-meter.js");
+
+const CLR = {
+  reset: "\x1b[0m",  bold: "\x1b[1m",  dim:  "\x1b[2m",
+  red:   "\x1b[31m", green:"\x1b[32m", yel:  "\x1b[33m",
+  blue:  "\x1b[34m", mag:  "\x1b[35m", cyan: "\x1b[36m",
+  white: "\x1b[37m", gray: "\x1b[90m",
+};
+const isTTY = process.stdout.isTTY;
+function c(color, s) { return isTTY ? CLR[color] + s + CLR.reset : s; }
+
+function loadStatus() {
+  const latest = path.join(STATE_DIR, "latest.json");
+  if (fs.existsSync(latest)) {
+    try { return JSON.parse(fs.readFileSync(latest, "utf8")); }
+    catch (_) {}
+  }
+  return recomputeLatest();
+}
+
+function recomputeLatest() {
+  const sessionId = mostRecentSessionId();
+  if (!sessionId) return null;
+  const r = spawnSync(process.execPath, [METER, "--session=" + sessionId, "--print"], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (r.status === 0 && r.stdout) {
+    try { return JSON.parse(r.stdout.toString("utf8")); } catch (_) {}
+  }
+  return null;
+}
+
+function mostRecentSessionId() {
+  if (!fs.existsSync(SESSIONS)) return null;
+  let best = null, bestMtime = 0;
+  for (const id of fs.readdirSync(SESSIONS)) {
+    const ev = path.join(SESSIONS, id, "events.jsonl");
+    try {
+      const s = fs.statSync(ev);
+      if (s.mtimeMs > bestMtime) { bestMtime = s.mtimeMs; best = id; }
+    } catch (_) {}
+  }
+  return best;
+}
+
+function fmt(num) {
+  if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + "M";
+  if (num >= 1_000)     return (num / 1_000).toFixed(1) + "k";
+  return String(num);
+}
+function fmtMs(ms) {
+  if (!ms) return "—";
+  if (ms < 1000) return ms + "ms";
+  if (ms < 60_000) return (ms / 1000).toFixed(1) + "s";
+  const m = Math.floor(ms / 60_000), s = Math.floor((ms % 60_000) / 1000);
+  return `${m}m${s.toString().padStart(2, "0")}s`;
+}
+function fmtCost(d) { return d ? "$" + d.toFixed(4) : "$0"; }
+function pad(s, w)  { s = String(s); return s.length >= w ? s : s + " ".repeat(w - s.length); }
+
+function renderStatusLine(st) {
+  if (!st) return c("gray", "no active copilot session");
+  const t = st.totals;
+  const model = (st.model || "?").replace(/^claude-/, "");
+  return [
+    c("bold", "copilot"),
+    c("gray", "[" + model + "]"),
+    c("cyan",  "↑" + fmt(t.inputTokens) + "in"),
+    c("green", "↓" + fmt(t.outputTokens) + "out"),
+    c("blue",  "⟳" + fmt(t.cacheReadTokens) + "cr"),
+    c("mag",   "⊕" + fmt(t.cacheWriteTokens) + "cw"),
+    c("yel",   fmtCost(t.cost)),
+    c("gray",  t.turns + "t/" + t.toolCalls + "🔧"),
+  ].join(" ");
+}
+
+function renderSummary(st) {
+  if (!st) {
+    console.log(c("gray", "No copilot session found. Start `copilot` first."));
+    return;
+  }
+  const t = st.totals;
+  const lines = [];
+  lines.push(c("bold", "Copilot session ") + c("gray", st.sessionId));
+  lines.push(c("gray", "Updated " + new Date(st.updatedAt).toLocaleString() + "  •  model: ") + (st.model || "?"));
+  lines.push("");
+
+  lines.push(c("bold", "Tokens"));
+  lines.push("  " + pad("input",         18) + c("cyan",  fmt(t.inputTokens).padStart(10)) + "  " + c("gray", t.inputTokens.toLocaleString()));
+  lines.push("  " + pad("output",        18) + c("green", fmt(t.outputTokens).padStart(10)) + "  " + c("gray", t.outputTokens.toLocaleString()));
+  lines.push("  " + pad("cache read",    18) + c("blue",  fmt(t.cacheReadTokens).padStart(10)) + "  " + c("gray", t.cacheReadTokens.toLocaleString()));
+  lines.push("  " + pad("cache write",   18) + c("mag",   fmt(t.cacheWriteTokens).padStart(10)) + "  " + c("gray", t.cacheWriteTokens.toLocaleString()));
+  lines.push("  " + pad("total billed*", 18) + c("yel",   fmt(t.billedTokens || 0).padStart(10)) + "  " + c("gray", (t.billedTokens || 0).toLocaleString()));
+  lines.push("");
+
+  lines.push(c("bold", "Activity"));
+  lines.push("  " + pad("turns",         18) + String(t.turns).padStart(10));
+  lines.push("  " + pad("tool calls",    18) + String(t.toolCalls).padStart(10));
+  lines.push("  " + pad("user messages", 18) + String(t.userMessages).padStart(10));
+  lines.push("  " + pad("API calls",     18) + String(t.apiCalls).padStart(10));
+  if (t.cost > 0) {
+    lines.push("  " + pad("cost",        18) + c("yel", fmtCost(t.cost).padStart(10)));
+  }
+  lines.push("");
+
+  const models = Object.entries(st.perModel || {});
+  if (models.length > 1) {
+    lines.push(c("bold", "By model"));
+    for (const [m, b] of models) {
+      lines.push("  " + pad(m, 30)
+        + c("cyan",  "↑" + fmt(b.inputTokens).padStart(8))
+        + c("green", " ↓" + fmt(b.outputTokens).padStart(8))
+        + c("blue",  " ⟳" + fmt(b.cacheReadTokens).padStart(8))
+        + c("gray",  " " + b.apiCalls + " calls"));
+    }
+    lines.push("");
+  }
+
+  if (st.perTurn && st.perTurn.length) {
+    lines.push(c("bold", "Last turns"));
+    for (const turn of st.perTurn.slice(-8)) {
+      lines.push("  turn " + pad("#" + turn.turnId, 6)
+        + c("cyan",  "↑" + fmt(turn.inputTokens).padStart(7))
+        + c("green", " ↓" + fmt(turn.outputTokens).padStart(7))
+        + c("blue",  " ⟳" + fmt(turn.cacheReadTokens).padStart(7))
+        + c("gray",  " " + turn.toolCalls + "🔧 " + fmtMs(turn.durationMs).padStart(7))
+        + "  " + c("gray", turn.model.replace(/^claude-/, "")));
+    }
+    lines.push("");
+  }
+
+  lines.push(c("gray", "* Billed tokens = input + output + cache_write + cache_read/10 (per Anthropic pricing)."));
+  console.log(lines.join("\n"));
+}
+
+function cmdStatus() { console.log(renderStatusLine(loadStatus())); }
+function cmdSummary() { renderSummary(loadStatus()); }
+function cmdJson()    { const s = loadStatus(); console.log(JSON.stringify(s, null, 2)); }
+function cmdRecompute() { console.log(renderStatusLine(recomputeLatest())); }
+
+function cmdWatch() {
+  const intervalMs = 1000;
+  let prevId = null;
+  function tick() {
+    const st = recomputeLatest();
+    if (isTTY) process.stdout.write("\x1b[2J\x1b[H"); // clear + home
+    if (!st) { console.log(c("gray", "Waiting for a copilot session…")); return; }
+    if (st.sessionId !== prevId) {
+      prevId = st.sessionId;
+      if (isTTY) process.stdout.write("\x1b]2;" + st.title + "\x07"); // also bump terminal title
+    }
+    renderSummary(st);
+    console.log(c("gray", "watching… (Ctrl-C to exit)"));
+  }
+  tick();
+  const h = setInterval(tick, intervalMs);
+  process.on("SIGINT", () => { clearInterval(h); process.exit(0); });
+}
+
+function cmdTop() {
+  if (!fs.existsSync(SESSIONS)) { console.log(c("gray", "No sessions yet.")); return; }
+  const rows = [];
+  for (const id of fs.readdirSync(SESSIONS)) {
+    const ev = path.join(SESSIONS, id, "events.jsonl");
+    if (!fs.existsSync(ev)) continue;
+    const r = spawnSync(process.execPath, [METER, "--session=" + id, "--print"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (r.status !== 0 || !r.stdout) continue;
+    let st;
+    try { st = JSON.parse(r.stdout.toString("utf8")); } catch (_) { continue; }
+    const t = st.totals;
+    if ((t.inputTokens + t.outputTokens) === 0) continue;
+    rows.push({
+      id, model: st.model, in: t.inputTokens, out: t.outputTokens,
+      cr: t.cacheReadTokens, cw: t.cacheWriteTokens,
+      cost: t.cost, turns: t.turns, tools: t.toolCalls,
+      mtime: fs.statSync(ev).mtimeMs,
+    });
+  }
+  rows.sort((a, b) => (b.in + b.out) - (a.in + a.out));
+  console.log(c("bold",
+    pad("session", 38) + pad("model", 22) +
+    pad("↑in", 10) + pad("↓out", 10) +
+    pad("⟳read", 10) + pad("⊕write", 10) +
+    pad("turns", 7) + pad("tools", 7) + pad("cost", 10)));
+  for (const r of rows.slice(0, 20)) {
+    console.log(
+      pad(r.id, 38) + pad((r.model || "?").replace(/^claude-/, ""), 22) +
+      pad(c("cyan",  fmt(r.in)),  10) +
+      pad(c("green", fmt(r.out)), 10) +
+      pad(c("blue",  fmt(r.cr)),  10) +
+      pad(c("mag",   fmt(r.cw)),  10) +
+      pad(String(r.turns), 7) + pad(String(r.tools), 7) +
+      pad(c("yel", fmtCost(r.cost)), 10));
+  }
+}
+
+function cmdHelp() {
+  console.log([
+    c("bold", "copilot-tokens") + " — live token meter for GitHub Copilot CLI",
+    "",
+    "Usage:",
+    "  copilot-tokens [status]     One-line summary of the current session",
+    "  copilot-tokens summary      Multi-line breakdown (per model, per turn)",
+    "  copilot-tokens watch        Live updating dashboard (refreshes every 1s)",
+    "  copilot-tokens top          Top sessions by total tokens across all history",
+    "  copilot-tokens json         Emit the raw status JSON",
+    "  copilot-tokens recompute    Re-scan the current session and refresh state",
+    "  copilot-tokens help         Show this help",
+    "",
+    "State files:",
+    "  " + path.join(STATE_DIR, "latest.json"),
+    "  " + path.join(STATE_DIR, "<sessionId>.json"),
+    "  " + path.join(STATE_DIR, "current"),
+  ].join("\n"));
+}
+
+const cmd = (process.argv[2] || "status").toLowerCase();
+switch (cmd) {
+  case "status":    cmdStatus(); break;
+  case "summary":   cmdSummary(); break;
+  case "watch":     cmdWatch(); break;
+  case "top":       cmdTop(); break;
+  case "json":      cmdJson(); break;
+  case "recompute": cmdRecompute(); break;
+  case "help":
+  case "--help":
+  case "-h":        cmdHelp(); break;
+  default:
+    console.error("Unknown command: " + cmd);
+    cmdHelp();
+    process.exit(2);
+}

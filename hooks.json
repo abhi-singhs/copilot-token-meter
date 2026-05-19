@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "node ./bin/token-meter.js --hook=sessionStart",
+        "powershell": "node .\\bin\\token-meter.js --hook=sessionStart",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "node ./bin/token-meter.js --hook=postToolUse",
+        "powershell": "node .\\bin\\token-meter.js --hook=postToolUse",
+        "timeoutSec": 10
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "node ./bin/token-meter.js --hook=userPromptSubmitted",
+        "powershell": "node .\\bin\\token-meter.js --hook=userPromptSubmitted",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "node ./bin/token-meter.js --hook=agentStop",
+        "powershell": "node .\\bin\\token-meter.js --hook=agentStop",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
+
