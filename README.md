@@ -6,7 +6,7 @@
 
 | Surface | How |
 |---|---|
-| **Always-visible "footer"** | The plugin hooks `sessionStart`, `postToolUse`, and `stop` and writes a one-line summary to your terminal title bar via OSC 2. Works in iTerm2, Kitty, Alacritty, WezTerm, Terminal.app, gnome-terminal, Windows Terminal. |
+| **Always-visible "footer"** | The plugin hooks `sessionStart`, `userPromptSubmitted`, `postToolUse`, and `agentStop` and writes a one-line summary to your terminal title bar via OSC 2. Works in iTerm2, Kitty, Alacritty, WezTerm, Terminal.app, gnome-terminal, Windows Terminal. |
 | **`/tokens` slash command** | Inside Copilot CLI, type `/tokens` for a multi-line breakdown — per-model, per-turn, with cost & quota. |
 | **`copilot-tokens` CLI** | Companion CLI with `status`, `summary`, `watch`, `top`, `json`, `recompute` subcommands for use in a second pane / tmux / CI. |
 | **Status JSON for other tools** | `~/.copilot/state/token-meter/latest.json` is rewritten on every hook tick — point your tmux status bar, polybar, iTerm status, or VS Code status item at it. |
@@ -17,32 +17,54 @@ Copilot CLI's built-in footer (`settings.json` → `footer`) only supports a fix
 
 This plugin works around that by piggy-backing on two stable contracts the CLI already exposes:
 
-1. **Plugin lifecycle hooks** (`sessionStart`, `postToolUse`, `stop`).
+1. **Plugin lifecycle hooks** (`sessionStart`, `userPromptSubmitted`, `postToolUse`, `agentStop`).
 2. **`events.jsonl`** in `~/.copilot/session-state/<sessionId>/` — typed against `schemas/session-events.schema.json` and emits `assistant.usage` events with `{ model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cost, duration, quotaSnapshots }` after every LLM round-trip, plus `assistant.message` events with `outputTokens`.
 
 The hook script reads `events.jsonl`, aggregates totals, and writes an OSC 2 title-bar escape to `/dev/tty` so you get a true always-visible footer above your shell prompt.
 
 ## Install
 
-This repo *is* a Copilot CLI plugin. Drop it into `~/.copilot/installed-plugins/_direct/abhi-singhs--copilot-token-meter/` and enable it in `~/.copilot/settings.json`:
-
-```json
-{
-  "enabledPlugins": {
-    "abhi-singhs/copilot-token-meter": true
-  }
-}
-```
-
-Then add the `bin/` directory to your `$PATH` (optional — only needed for `copilot-tokens`):
+The plugin lives in this repository. Install it into Copilot CLI from wherever you cloned it:
 
 ```bash
-export PATH="$HOME/.copilot/installed-plugins/_direct/abhi-singhs--copilot-token-meter/bin:$PATH"
+# From an absolute local path (recommended while iterating):
+copilot plugin install /Users/abhisingh/Documents/copilot-token-meter
+
+# Or once pushed to GitHub:
+copilot plugin install abhi-singhs/copilot-token-meter
+```
+
+`copilot plugin install <path>` snapshots the folder into
+`~/.copilot/installed-plugins/_direct/copilot-token-meter/` and registers it in
+`~/.copilot/config.json` with `source: { source: "local", path: "<your path>" }`.
+
+After editing files in this folder, refresh the snapshot:
+
+```bash
+copilot plugin update copilot-token-meter
+```
+
+To uninstall:
+
+```bash
+copilot plugin uninstall copilot-token-meter
+```
+
+> **Important:** Plugins are loaded once per `copilot` session. Restart the
+> CLI after install / update for hooks to take effect.
+
+Add the `bin/` directory to your `$PATH` (optional — only needed to call
+`copilot-tokens` directly from your shell):
+
+```bash
+export PATH="$HOME/Documents/copilot-token-meter/bin:$PATH"
 ```
 
 The plugin uses only Node's built-in modules — no `npm install` needed.
 
 ### Recommended companion settings
+
+In `~/.copilot/settings.json`:
 
 ```json
 {
