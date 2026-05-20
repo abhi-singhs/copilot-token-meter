@@ -1,17 +1,12 @@
 #!/usr/bin/env node
 // copilot-tokens: companion CLI for the copilot-token-meter plugin.
 //
-//   copilot-tokens status     Print a one-line summary (default).
-//   copilot-tokens summary    Print a multi-line breakdown.
+//   copilot-tokens status     One-line summary (default).
+//   copilot-tokens summary    Multi-line breakdown.
 //   copilot-tokens watch      Live tail; refreshes every second.
 //   copilot-tokens top        Top sessions by total tokens, all time.
 //   copilot-tokens json       Dump the raw status JSON (for scripting).
 //   copilot-tokens recompute  Re-aggregate the current session right now.
-//
-// Reads ~/.copilot/state/token-meter/latest.json which is kept up-to-date
-// by the in-process hooks; if that file is stale or missing, falls back
-// to scanning the most recent ~/.copilot/session-state/<id>/events.jsonl
-// directly so the CLI is useful even when the plugin's hooks haven't run.
 
 "use strict";
 
@@ -19,6 +14,12 @@ const fs   = require("fs");
 const path = require("path");
 const os   = require("os");
 const { spawnSync } = require("child_process");
+
+const { readJsonl }              = require("../lib/io");
+const { aggregate }              = require("../lib/aggregate");
+const { loadTelemetryUsage }     = require("../lib/telemetry");
+const { formatTokens, formatMs, pad, formatTitle } = require("../lib/format");
+const { formatUSD, contextWindow } = require("../lib/pricing");
 
 const HOME      = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
 const STATE_DIR = path.join(HOME, "state", "token-meter");
@@ -34,25 +35,47 @@ const CLR = {
 const isTTY = process.stdout.isTTY;
 function c(color, s) { return isTTY ? CLR[color] + s + CLR.reset : s; }
 
+// Run the aggregator in-process for `sessionId`. Avoids the ~50ms per-spawn
+// cost of fork() — important for `top` and `watch` which call this hot.
+function computeStatus(sessionId) {
+  if (!sessionId) return null;
+  const eventsPath = path.join(SESSIONS, sessionId, "events.jsonl");
+  if (!fs.existsSync(eventsPath)) return null;
+  const events = readJsonl(eventsPath);
+  const telemetry = loadTelemetryUsage(sessionId);
+  const agg = aggregate(events, telemetry);
+  return {
+    schema: 3,
+    sessionId,
+    eventsPath,
+    updatedAt: new Date().toISOString(),
+    model:     agg.lastModel,
+    totals:    agg.totals,
+    perModel:  agg.perModel,
+    perTurn:   agg.perTurn.slice(-50),
+    perTool:   agg.perTool,
+    quota:     agg.quota,
+    telemetryAvailable: agg.telemetryAvailable,
+    telemetryRecords:   agg.telemetryRecords,
+    title:     formatTitle(agg),
+  };
+}
+
 function loadStatus() {
   const latest = path.join(STATE_DIR, "latest.json");
   if (fs.existsSync(latest)) {
-    try { return JSON.parse(fs.readFileSync(latest, "utf8")); }
-    catch (_) {}
+    try {
+      const s = JSON.parse(fs.readFileSync(latest, "utf8"));
+      // Schema 1/2 was on-disk-only; recompute to pick up new fields.
+      if (s && s.schema === 3) return s;
+    } catch (_) {}
   }
   return recomputeLatest();
 }
 
 function recomputeLatest() {
   const sessionId = mostRecentSessionId();
-  if (!sessionId) return null;
-  const r = spawnSync(process.execPath, [METER, "--session=" + sessionId, "--print"], {
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  if (r.status === 0 && r.stdout) {
-    try { return JSON.parse(r.stdout.toString("utf8")); } catch (_) {}
-  }
-  return null;
+  return computeStatus(sessionId);
 }
 
 function mostRecentSessionId() {
@@ -68,33 +91,35 @@ function mostRecentSessionId() {
   return best;
 }
 
-function fmt(num) {
-  if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + "M";
-  if (num >= 1_000)     return (num / 1_000).toFixed(1) + "k";
-  return String(num);
+function contextBar(pct) {
+  if (pct == null) return "";
+  const width = 10;
+  const filled = Math.min(width, Math.max(0, Math.round(pct * width)));
+  const bar = "▮".repeat(filled) + "▯".repeat(width - filled);
+  const pctStr = (pct * 100).toFixed(1) + "%";
+  if (pct > 0.95)   return c("red",   bar + " " + pctStr);
+  if (pct > 0.80)   return c("yel",   bar + " " + pctStr);
+  return c("green", bar + " " + pctStr);
 }
-function fmtMs(ms) {
-  if (!ms) return "—";
-  if (ms < 1000) return ms + "ms";
-  if (ms < 60_000) return (ms / 1000).toFixed(1) + "s";
-  const m = Math.floor(ms / 60_000), s = Math.floor((ms % 60_000) / 1000);
-  return `${m}m${s.toString().padStart(2, "0")}s`;
-}
-function pad(s, w)  { s = String(s); return s.length >= w ? s : s + " ".repeat(w - s.length); }
 
 function renderStatusLine(st) {
   if (!st) return c("gray", "no active copilot session");
   const t = st.totals;
   const model = (st.model || "?").replace(/^claude-/, "");
-  return [
+  const parts = [
     c("bold", "copilot"),
     c("gray", "[" + model + "]"),
-    c("cyan",  "↑" + fmt(t.inputTokens) + "in"),
-    c("green", "↓" + fmt(t.outputTokens) + "out"),
-    c("blue",  "⟳" + fmt(t.cacheReadTokens) + "cr"),
-    c("mag",   "⊕" + fmt(t.cacheWriteTokens) + "cw"),
-    c("gray",  t.turns + "t/" + t.toolCalls + "🔧"),
-  ].join(" ");
+    c("cyan",  "↑" + formatTokens(t.inputTokens) + "in"),
+    c("green", "↓" + formatTokens(t.outputTokens) + "out"),
+    c("blue",  "⟳" + formatTokens(t.cacheReadTokens) + "cr"),
+    c("mag",   "⊕" + formatTokens(t.cacheWriteTokens) + "cw"),
+  ];
+  if (t.contextUtilization != null) {
+    parts.push(c("yel", "📦" + (t.contextUtilization * 100).toFixed(0) + "%"));
+  }
+  parts.push(c("gray", formatUSD(t.usdCost)));
+  parts.push(c("gray", t.turns + "t/" + t.toolCalls + "🔧"));
+  return parts.join(" ");
 }
 
 function renderSummary(st) {
@@ -109,20 +134,28 @@ function renderSummary(st) {
   if (st.telemetryAvailable) {
     lines.push(c("gray", "Source: telemetry log (" + (st.telemetryRecords||0) + " API calls observed)"));
   } else {
-    lines.push(c("yel",  "Source: events.jsonl only (input / cache / cost unavailable in this CLI build)"));
+    lines.push(c("yel",  "Source: events.jsonl only (input / cache unavailable in this CLI build)"));
   }
   lines.push("");
 
   lines.push(c("bold", "Tokens"));
-  lines.push("  " + pad("input",         18) + c("cyan",  fmt(t.inputTokens).padStart(10))      + "  " + c("gray", t.inputTokens.toLocaleString()));
-  lines.push("  " + pad("output",        18) + c("green", fmt(t.outputTokens).padStart(10))     + "  " + c("gray", t.outputTokens.toLocaleString()));
-  lines.push("  " + pad("cache read",    18) + c("blue",  fmt(t.cacheReadTokens).padStart(10))  + "  " + c("gray", t.cacheReadTokens.toLocaleString()));
-  lines.push("  " + pad("cache write",   18) + c("mag",   fmt(t.cacheWriteTokens).padStart(10)) + "  " + c("gray", t.cacheWriteTokens.toLocaleString()));
+  lines.push("  " + pad("input",         18) + c("cyan",  formatTokens(t.inputTokens).padStart(10))      + "  " + c("gray", t.inputTokens.toLocaleString()));
+  lines.push("  " + pad("output",        18) + c("green", formatTokens(t.outputTokens).padStart(10))     + "  " + c("gray", t.outputTokens.toLocaleString()));
+  lines.push("  " + pad("cache read",    18) + c("blue",  formatTokens(t.cacheReadTokens).padStart(10))  + "  " + c("gray", t.cacheReadTokens.toLocaleString()));
+  lines.push("  " + pad("cache write",   18) + c("mag",   formatTokens(t.cacheWriteTokens).padStart(10)) + "  " + c("gray", t.cacheWriteTokens.toLocaleString()));
   if ((t.reasoningTokens || 0) > 0) {
-    lines.push("  " + pad("reasoning",   18) + c("mag",   fmt(t.reasoningTokens).padStart(10))  + "  " + c("gray", t.reasoningTokens.toLocaleString()));
+    lines.push("  " + pad("reasoning",   18) + c("mag",   formatTokens(t.reasoningTokens).padStart(10))  + "  " + c("gray", t.reasoningTokens.toLocaleString()));
   }
-  lines.push("  " + pad("prompt (wire)", 18) + c("yel",   fmt(t.promptTokens || 0).padStart(10))+ "  " + c("gray", (t.promptTokens || 0).toLocaleString()));
-  lines.push("  " + pad("total billed*", 18) + c("yel",   fmt(t.billedTokens || 0).padStart(10))+ "  " + c("gray", (t.billedTokens || 0).toLocaleString()));
+  lines.push("  " + pad("prompt (wire)", 18) + c("yel",   formatTokens(t.promptTokens || 0).padStart(10))+ "  " + c("gray", (t.promptTokens || 0).toLocaleString()));
+  lines.push("  " + pad("total billed*", 18) + c("yel",   formatTokens(t.billedTokens || 0).padStart(10))+ "  " + c("gray", (t.billedTokens || 0).toLocaleString()));
+  lines.push("");
+
+  lines.push(c("bold", "Cost") + (t.usdCostKnown ? "" : c("gray", "  (some models unpriced)")));
+  lines.push("  " + pad("estimated USD",  18) + c("green", formatUSD(t.usdCost).padStart(10)));
+  if (t.contextUtilization != null) {
+    lines.push("  " + pad("context window", 18) + contextBar(t.contextUtilization)
+      + c("gray", "  (" + (t.lastCallPromptTokens || 0).toLocaleString() + " / " + (t.contextWindow || 0).toLocaleString() + ", most recent call)"));
+  }
   lines.push("");
 
   lines.push(c("bold", "Activity"));
@@ -130,19 +163,52 @@ function renderSummary(st) {
   lines.push("  " + pad("tool calls",    18) + String(t.toolCalls).padStart(10));
   lines.push("  " + pad("user messages", 18) + String(t.userMessages).padStart(10));
   lines.push("  " + pad("API calls",     18) + String(t.apiCalls).padStart(10));
-  if (t.durationMs > 0)   lines.push("  " + pad("API time",   18) + fmtMs(t.durationMs).padStart(10));
+  if (t.durationMs > 0)   lines.push("  " + pad("API time",   18) + formatMs(t.durationMs).padStart(10));
   lines.push("");
+
+  // Burn rate over the last 5 / 30 min — computed from history.jsonl.
+  const burn = computeBurnRate(st.sessionId);
+  if (burn && (burn.last5min.tokens > 0 || burn.last30min.tokens > 0)) {
+    lines.push(c("bold", "Burn rate"));
+    lines.push("  " + pad("last 5 min",  18) + c("cyan",  formatTokens(burn.last5min.tokens).padStart(10))  + c("gray", "  " + formatTokens(burn.last5min.tokensPerMin) + "/min"));
+    lines.push("  " + pad("last 30 min", 18) + c("cyan",  formatTokens(burn.last30min.tokens).padStart(10)) + c("gray", "  " + formatTokens(burn.last30min.tokensPerMin) + "/min"));
+    if (t.contextUtilization != null && t.contextUtilization < 1 && burn.last5min.tokensPerMin > 0) {
+      const remaining = (t.contextWindow || 0) - (t.promptTokens || 0);
+      const etaMin = remaining / burn.last5min.tokensPerMin;
+      if (etaMin > 0 && etaMin < 24 * 60) {
+        lines.push("  " + pad("ETA to ctx full", 18) + c("yel", formatMs(etaMin * 60_000).padStart(10)));
+      }
+    }
+    lines.push("");
+  }
 
   const models = Object.entries(st.perModel || {});
   if (models.length > 1) {
     lines.push(c("bold", "By model"));
     for (const [m, b] of models) {
       lines.push("  " + pad(m, 30)
-        + c("cyan",  "↑" + fmt(b.inputTokens).padStart(8))
-        + c("green", " ↓" + fmt(b.outputTokens).padStart(8))
-        + c("blue",  " ⟳" + fmt(b.cacheReadTokens).padStart(8))
-        + c("mag",   " ⊕" + fmt(b.cacheWriteTokens).padStart(8))
+        + c("cyan",  "↑" + formatTokens(b.inputTokens).padStart(8))
+        + c("green", " ↓" + formatTokens(b.outputTokens).padStart(8))
+        + c("blue",  " ⟳" + formatTokens(b.cacheReadTokens).padStart(8))
+        + c("mag",   " ⊕" + formatTokens(b.cacheWriteTokens).padStart(8))
+        + c("green", " " + formatUSD(b.usdCost).padStart(8))
         + c("gray",  " " + b.apiCalls + " calls"));
+    }
+    lines.push("");
+  }
+
+  const tools = Object.values(st.perTool || {})
+    .filter(t => t.calls > 0)
+    .sort((a, b) => (b.inputTokens + b.outputTokens + b.cacheReadTokens) - (a.inputTokens + a.outputTokens + a.cacheReadTokens));
+  if (tools.length > 0) {
+    lines.push(c("bold", "By tool"));
+    for (const tool of tools.slice(0, 12)) {
+      lines.push("  " + pad(tool.name, 22)
+        + c("gray",  pad(String(tool.calls), 4) + "calls")
+        + c("cyan",  " ↑" + formatTokens(tool.inputTokens).padStart(7))
+        + c("green", " ↓" + formatTokens(tool.outputTokens).padStart(7))
+        + c("blue",  " ⟳" + formatTokens(tool.cacheReadTokens).padStart(7))
+        + c("green", " " + formatUSD(tool.usdCost).padStart(8)));
     }
     lines.push("");
   }
@@ -151,12 +217,12 @@ function renderSummary(st) {
     lines.push(c("bold", "Last turns"));
     for (const turn of st.perTurn.slice(-8)) {
       lines.push("  turn " + pad("#" + turn.turnId, 6)
-        + c("cyan",  "↑" + fmt(turn.inputTokens).padStart(7))
-        + c("green", " ↓" + fmt(turn.outputTokens).padStart(7))
-        + c("blue",  " ⟳" + fmt(turn.cacheReadTokens).padStart(7))
-        + c("mag",   " ⊕" + fmt(turn.cacheWriteTokens).padStart(7))
-        + c("gray",  " " + turn.toolCalls + "🔧 " + fmtMs(turn.durationMs).padStart(7))
-        + "  " + c("gray", turn.model.replace(/^claude-/, "")));
+        + c("cyan",  "↑" + formatTokens(turn.inputTokens).padStart(7))
+        + c("green", " ↓" + formatTokens(turn.outputTokens).padStart(7))
+        + c("blue",  " ⟳" + formatTokens(turn.cacheReadTokens).padStart(7))
+        + c("mag",   " ⊕" + formatTokens(turn.cacheWriteTokens).padStart(7))
+        + c("gray",  " " + turn.toolCalls + "🔧 " + formatMs(turn.durationMs).padStart(7))
+        + "  " + c("gray", (turn.model || "?").replace(/^claude-/, "")));
     }
     lines.push("");
   }
@@ -177,7 +243,53 @@ function renderSummary(st) {
   }
 
   lines.push(c("gray", "* Billed tokens = input + output + cache_write + cache_read/10 (per Anthropic pricing)."));
+  lines.push(c("gray", "  USD cost is an estimate — override pricing at ~/.copilot/state/token-meter/pricing.json."));
   console.log(lines.join("\n"));
+}
+
+// Compute tokens-per-minute and last-N-minutes deltas from history.jsonl.
+function computeBurnRate(sessionId) {
+  if (!sessionId) return null;
+  const hist = path.join(STATE_DIR, "history-" + sessionId + ".jsonl");
+  if (!fs.existsSync(hist)) return null;
+  let lines;
+  try { lines = fs.readFileSync(hist, "utf8").trim().split("\n"); } catch (_) { return null; }
+  const snapshots = [];
+  for (const line of lines) {
+    try { snapshots.push(JSON.parse(line)); } catch (_) {}
+  }
+  if (snapshots.length === 0) return null;
+  const now = Date.now();
+  function windowDelta(min) {
+    const cutoff = now - min * 60_000;
+    let start = null;
+    for (const s of snapshots) {
+      if (s.ts >= cutoff) { start = s; break; }
+    }
+    const end = snapshots[snapshots.length - 1];
+    if (!start || !end || start === end) {
+      return { tokens: 0, tokensPerMin: 0, durationMs: 0 };
+    }
+    const tokens = (end.promptTokens - start.promptTokens) + (end.outputTokens - start.outputTokens);
+    const dur = end.ts - start.ts;
+    return {
+      tokens,
+      tokensPerMin: dur > 0 ? Math.round(tokens / (dur / 60_000)) : 0,
+      durationMs: dur,
+    };
+  }
+  return { last5min: windowDelta(5), last30min: windowDelta(30) };
+}
+
+// Tiny ASCII sparkline of tokens/min over the last N data points.
+function renderSparkline(values, width) {
+  if (!values || values.length === 0) return "";
+  const chars = "▁▂▃▄▅▆▇█";
+  const max = Math.max(...values, 1);
+  return values.slice(-width).map(v => {
+    const idx = Math.min(chars.length - 1, Math.floor((v / max) * (chars.length - 1)));
+    return chars[idx];
+  }).join("");
 }
 
 function cmdStatus() { console.log(renderStatusLine(loadStatus())); }
@@ -190,13 +302,31 @@ function cmdWatch() {
   let prevId = null;
   function tick() {
     const st = recomputeLatest();
-    if (isTTY) process.stdout.write("\x1b[2J\x1b[H"); // clear + home
+    if (isTTY) process.stdout.write("\x1b[2J\x1b[H");
     if (!st) { console.log(c("gray", "Waiting for a copilot session…")); return; }
     if (st.sessionId !== prevId) {
       prevId = st.sessionId;
-      if (isTTY) process.stdout.write("\x1b]2;" + st.title + "\x07"); // also bump terminal title
+      if (isTTY) process.stdout.write("\x1b]2;" + st.title + "\x07");
     }
     renderSummary(st);
+
+    // Sparkline of recent tokens/min.
+    const hist = path.join(STATE_DIR, "history-" + st.sessionId + ".jsonl");
+    if (fs.existsSync(hist)) {
+      try {
+        const snaps = fs.readFileSync(hist, "utf8").trim().split("\n").slice(-40).map(JSON.parse);
+        const rates = [];
+        for (let i = 1; i < snaps.length; i++) {
+          const dt = snaps[i].ts - snaps[i-1].ts;
+          if (dt <= 0) continue;
+          const dTok = (snaps[i].promptTokens - snaps[i-1].promptTokens) + (snaps[i].outputTokens - snaps[i-1].outputTokens);
+          rates.push(dTok / (dt / 60_000));
+        }
+        if (rates.length > 0) {
+          console.log(c("gray", "tokens/min ") + renderSparkline(rates, 40));
+        }
+      } catch (_) {}
+    }
     console.log(c("gray", "watching… (Ctrl-C to exit)"));
   }
   tick();
@@ -210,34 +340,31 @@ function cmdTop() {
   for (const id of fs.readdirSync(SESSIONS)) {
     const ev = path.join(SESSIONS, id, "events.jsonl");
     if (!fs.existsSync(ev)) continue;
-    const r = spawnSync(process.execPath, [METER, "--session=" + id, "--print"], {
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    if (r.status !== 0 || !r.stdout) continue;
-    let st;
-    try { st = JSON.parse(r.stdout.toString("utf8")); } catch (_) { continue; }
+    const st = computeStatus(id);
+    if (!st) continue;
     const t = st.totals;
     if ((t.inputTokens + t.outputTokens) === 0) continue;
     rows.push({
       id, model: st.model, in: t.inputTokens, out: t.outputTokens,
       cr: t.cacheReadTokens, cw: t.cacheWriteTokens,
-      turns: t.turns, tools: t.toolCalls,
+      turns: t.turns, tools: t.toolCalls, usd: t.usdCost,
       mtime: fs.statSync(ev).mtimeMs,
     });
   }
-  rows.sort((a, b) => (b.in + b.out) - (a.in + a.out));
+  rows.sort((a, b) => (b.in + b.out + b.cr + b.cw) - (a.in + a.out + a.cr + a.cw));
   console.log(c("bold",
     pad("session", 38) + pad("model", 22) +
     pad("↑in", 10) + pad("↓out", 10) +
     pad("⟳read", 10) + pad("⊕write", 10) +
-    pad("turns", 7) + pad("tools", 7)));
+    pad("USD", 10) + pad("turns", 7) + pad("tools", 7)));
   for (const r of rows.slice(0, 20)) {
     console.log(
       pad(r.id, 38) + pad((r.model || "?").replace(/^claude-/, ""), 22) +
-      pad(c("cyan",  fmt(r.in)),  10) +
-      pad(c("green", fmt(r.out)), 10) +
-      pad(c("blue",  fmt(r.cr)),  10) +
-      pad(c("mag",   fmt(r.cw)),  10) +
+      pad(c("cyan",  formatTokens(r.in)),  10) +
+      pad(c("green", formatTokens(r.out)), 10) +
+      pad(c("blue",  formatTokens(r.cr)),  10) +
+      pad(c("mag",   formatTokens(r.cw)),  10) +
+      pad(c("green", formatUSD(r.usd)),    10) +
       pad(String(r.turns), 7) + pad(String(r.tools), 7));
   }
 }
@@ -248,7 +375,7 @@ function cmdHelp() {
     "",
     "Usage:",
     "  copilot-tokens [status]     One-line summary of the current session",
-    "  copilot-tokens summary      Multi-line breakdown (per model, per turn)",
+    "  copilot-tokens summary      Multi-line breakdown (per model, per tool, per turn)",
     "  copilot-tokens watch        Live updating dashboard (refreshes every 1s)",
     "  copilot-tokens top          Top sessions by total tokens across all history",
     "  copilot-tokens json         Emit the raw status JSON",
@@ -258,7 +385,9 @@ function cmdHelp() {
     "State files:",
     "  " + path.join(STATE_DIR, "latest.json"),
     "  " + path.join(STATE_DIR, "<sessionId>.json"),
+    "  " + path.join(STATE_DIR, "history-<sessionId>.jsonl"),
     "  " + path.join(STATE_DIR, "current"),
+    "  " + path.join(STATE_DIR, "pricing.json") + c("gray", "  (optional user override)"),
   ].join("\n"));
 }
 
