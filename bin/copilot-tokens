@@ -54,6 +54,7 @@ function computeStatus(sessionId) {
     perModel:  agg.perModel,
     perTurn:   agg.perTurn.slice(-50),
     perTool:   agg.perTool,
+    subAgentTotals: agg.subAgentTotals,
     quota:     agg.quota,
     telemetryAvailable: agg.telemetryAvailable,
     telemetryRecords:   agg.telemetryRecords,
@@ -209,6 +210,24 @@ function renderSummary(st) {
         + c("green", " ↓" + formatTokens(tool.outputTokens).padStart(7))
         + c("blue",  " ⟳" + formatTokens(tool.cacheReadTokens).padStart(7))
         + c("green", " " + formatUSD(tool.usdCost).padStart(8)));
+    }
+    lines.push("");
+  }
+
+  // Sub-agents: spend delegated to task/explore/etc. Always render if any
+  // sub-agent activity is present; otherwise stay silent.
+  const sub = st.subAgentTotals;
+  if (sub && sub.apiCalls > 0) {
+    lines.push(c("bold", "Sub-agents") + c("gray", "  (delegated work)"));
+    lines.push("  " + pad("API calls",     18) + String(sub.apiCalls).padStart(10));
+    lines.push("  " + pad("input",         18) + c("cyan",  formatTokens(sub.inputTokens).padStart(10)));
+    lines.push("  " + pad("output",        18) + c("green", formatTokens(sub.outputTokens).padStart(10)));
+    lines.push("  " + pad("cache read",    18) + c("blue",  formatTokens(sub.cacheReadTokens).padStart(10)));
+    lines.push("  " + pad("cache write",   18) + c("mag",   formatTokens(sub.cacheWriteTokens).padStart(10)));
+    lines.push("  " + pad("estimated USD", 18) + c("green", formatUSD(sub.usdCost).padStart(10)));
+    const subModels = Object.keys(sub.perModel || {});
+    if (subModels.length > 0) {
+      lines.push("  " + pad("models", 18) + subModels.join(", "));
     }
     lines.push("");
   }

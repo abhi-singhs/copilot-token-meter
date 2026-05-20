@@ -152,6 +152,7 @@ function buildStatusJson(agg, sessionId, eventsPath) {
     perModel:  agg.perModel,
     perTurn:   agg.perTurn.slice(-50),
     perTool:   agg.perTool,
+    subAgentTotals: agg.subAgentTotals,
     quota:     agg.quota,
     telemetryAvailable: agg.telemetryAvailable,
     telemetryRecords:   agg.telemetryRecords,
@@ -183,7 +184,16 @@ function main() {
   writeAtomic(path.join(STATE_DIR, "current"),           sessionId + "\n");
 
   appendHistorySnapshot(sessionId, agg);
-  writeTitleBar(status.title);
+
+  // T3.4 — optional title-bar reset when the agent finishes. Opt-in via
+  // env var so users who like seeing the final stats lingering keep that
+  // behavior. When enabled, clear the title back to a generic string.
+  if (process.env.COPILOT_TOKENMETER_RESET_ON_STOP === "1" &&
+      args.hook === "agentStop") {
+    writeTitleBar("");
+  } else {
+    writeTitleBar(status.title);
+  }
 
   if (args.print) {
     process.stdout.write(JSON.stringify(status, null, 2) + "\n");
