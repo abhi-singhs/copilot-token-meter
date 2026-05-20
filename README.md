@@ -2,6 +2,8 @@
 
 > Live token & cost meter for **GitHub Copilot CLI**. Shows input / output / cache tokens, cost, and agent activity for every prompt — in your terminal title bar, in a live dashboard, and via a `/tokens` slash command.
 
+> ⚠ **USD cost is a rough guesstimate, not a bill.** The dollar numbers come from multiplying observed token counts by Anthropic / OpenAI's *public list prices*. They do **not** model GitHub Copilot routing weights, enterprise discounts, BYOK rates, cache-TTL tiers, or promotional credits — and the published list prices themselves can change at any time. Treat the USD figure as a *relative sanity check* across tools and turns, never as a number to put in a budget. The authoritative source for your actual usage is `/usage` inside Copilot CLI (or your provider's billing console).
+
 ## What you get
 
 | Surface | How |
@@ -129,7 +131,7 @@ copilot[opus-4.7-1m-internal] ↑12.3k ↓4.2k ⟳88.0k ⊕5.1k 🧠1.2k 7t/23�
 
 The `summary` view additionally shows:
 
-- **Estimated USD cost** per Anthropic-style published pricing (override at `~/.copilot/state/token-meter/pricing.json`).
+- **Estimated USD cost** — see the [Cost is a guesstimate](#%E2%9A%A0-cost-is-a-guesstimate) section below for important caveats. Computed from a built-in Anthropic-style price table; override at `~/.copilot/state/token-meter/pricing.json`.
 - **Context-window utilization** as a bar + percentage, computed against the most recent API call's prompt size (cache_read + cache_write + input) so it reflects what the model actually saw.
 - **Burn rate** — tokens/min over the last 5 / 30 minutes and an ETA to context-window exhaustion at the current rate (when telemetry is producing fresh data).
 - **Per-tool attribution** — `By tool` section showing which tools (`bash`, `view`, `edit`, …) burned the most input/cache tokens, with proportional `1/N` splitting across batched tool calls.
@@ -149,6 +151,20 @@ The `summary` view additionally shows:
 | `~/.copilot/state/token-meter/pricing.json` | **Optional** user override for per-model USD pricing + context-window sizes. |
 | `~/.copilot/state/token-meter/hooks.log` | One-line trace per hook invocation (handy for debugging that hooks fire at all). |
 | `~/.copilot/state/token-meter/errors.log` | Hook error log (rotated by `logrotate` etc.). |
+
+## ⚠ Cost is a guesstimate
+
+The USD figure this plugin shows is a **rough guesstimate, not a bill**. It is computed by multiplying the token counts you actually saw (`input`, `output`, `cache_read`, `cache_write`) by the matching model's *published list price* per million tokens. That formula does not know about, and therefore does not model:
+
+- **GitHub Copilot's internal billing weights.** Premium-request quotas, model multipliers, and the conversion between "cost units" and dollars are not public. The numbers shown here may bear no relation to what you (or your employer) actually get charged.
+- **Enterprise contracts, BYOK rates, partner discounts, and promotional credits.** These can shift effective per-token cost in either direction.
+- **Cache TTL tiers.** Anthropic exposes both 5-minute and (where available) 1-hour cache write prices. This plugin always uses the 5-minute rate.
+- **List-price drift.** Public list prices change; the table baked into `lib/pricing.js` is a snapshot.
+- **Unknown models.** Anything not in the price table reports `—`. If you see widespread `—`, the total is undercounting.
+
+For your *actual* cost / quota, run `/usage` inside Copilot CLI, or check your provider's billing console. Use this plugin's USD figure as a *relative* sanity check across tools, models, turns, and sessions — not as a number to put in a budget or submit to finance.
+
+You can override pricing per model at `~/.copilot/state/token-meter/pricing.json`; see [Configuration](#configuration) for the schema.
 
 ## Configuration
 
@@ -179,7 +195,7 @@ Drop a `pricing.json` at `~/.copilot/state/token-meter/pricing.json` to add or o
 - **Sub-agent attribution**: sub-agent telemetry records carry `initiator: "sub-agent"` and `parent_tool_call_id`. We attribute their cost to the parent tool (typically `task`) and also surface a separate Sub-agents section.
 - **Reasoning tokens** are surfaced separately when the provider reports them (OpenAI o-series / gpt-5 reasoning models). Anthropic does not split reasoning out from output tokens, so `🧠` typically reads 0 on Claude models — the reasoning is already inside `↓`.
 - **Billed tokens** (in `summary` view) is computed as `input + output + cache_write + cache_read/10`, matching Anthropic's published pricing model. If you're on GitHub-managed routing or a BYOK provider, the actual billing rule may differ — treat this as an upper-bound estimate.
-- **USD cost** is computed from a built-in per-model price table (Anthropic published rates as of plugin version). Use the `pricing.json` override if your billing terms differ. Use `/usage` inside Copilot CLI for authoritative premium-request accounting.
+- **USD cost** is a *guesstimate*. It multiplies observed token counts by Anthropic / OpenAI's published *list* prices and does not know about GitHub Copilot routing weights, enterprise discounts, BYOK rates, cache-TTL tiers, or promotional credits. The published list prices themselves can drift. **Use `/usage` inside Copilot CLI for authoritative premium-request accounting** — the USD figure here is for sanity-checking relative spend across tools, models, and turns, not for invoicing. Use the `pricing.json` override to align with your contract if needed.
 - **Quota** (premium interactions / chat / completions remaining) is pulled from `copilot_user_info` telemetry blocks emitted by the CLI itself, so it tracks `/usage` directly.
 - If telemetry logs are unavailable (very fresh session, logs rotated away), the meter degrades gracefully to events-only mode — `outputTokens` and activity are still accurate, the rest read 0, and the `summary` banner switches to `Source: events.jsonl only`.
 

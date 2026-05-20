@@ -118,7 +118,7 @@ function renderStatusLine(st) {
   if (t.contextUtilization != null) {
     parts.push(c("yel", "📦" + (t.contextUtilization * 100).toFixed(0) + "%"));
   }
-  parts.push(c("gray", formatUSD(t.usdCost)));
+  parts.push(c("gray", "~" + formatUSD(t.usdCost)));
   parts.push(c("gray", t.turns + "t/" + t.toolCalls + "🔧"));
   return parts.join(" ");
 }
@@ -151,8 +151,8 @@ function renderSummary(st) {
   lines.push("  " + pad("total billed*", 18) + c("yel",   formatTokens(t.billedTokens || 0).padStart(10))+ "  " + c("gray", (t.billedTokens || 0).toLocaleString()));
   lines.push("");
 
-  lines.push(c("bold", "Cost") + (t.usdCostKnown ? "" : c("gray", "  (some models unpriced)")));
-  lines.push("  " + pad("estimated USD",  18) + c("green", formatUSD(t.usdCost).padStart(10)));
+  lines.push(c("bold", "Cost") + c("yel", "  (rough guesstimate — see disclaimer below)") + (t.usdCostKnown ? "" : c("gray", "  (some models unpriced)")));
+  lines.push("  " + pad("estimated USD",  18) + c("green", formatUSD(t.usdCost).padStart(10)) + c("gray", "  ± unknown — not a bill"));
   if (t.contextUtilization != null) {
     lines.push("  " + pad("context window", 18) + contextBar(t.contextUtilization)
       + c("gray", "  (" + (t.lastCallPromptTokens || 0).toLocaleString() + " / " + (t.contextWindow || 0).toLocaleString() + ", most recent call)"));
@@ -262,7 +262,13 @@ function renderSummary(st) {
   }
 
   lines.push(c("gray", "* Billed tokens = input + output + cache_write + cache_read/10 (per Anthropic pricing)."));
-  lines.push(c("gray", "  USD cost is an estimate — override pricing at ~/.copilot/state/token-meter/pricing.json."));
+  lines.push("");
+  lines.push(c("yel", "⚠  USD figures are a rough guesstimate, not a bill."));
+  lines.push(c("gray", "   They multiply observed token counts by published Anthropic/OpenAI list prices."));
+  lines.push(c("gray", "   Your actual charges may differ — GitHub Copilot routing, enterprise discounts,"));
+  lines.push(c("gray", "   BYOK rates, cache-TTL tiers, and tier promotions are NOT modeled."));
+  lines.push(c("gray", "   For authoritative billing, use `/usage` inside Copilot CLI or your provider's console."));
+  lines.push(c("gray", "   Override pricing at ~/.copilot/state/token-meter/pricing.json."));
   console.log(lines.join("\n"));
 }
 

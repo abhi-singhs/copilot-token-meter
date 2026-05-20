@@ -19,7 +19,7 @@ When the user invokes `/tokens` (or asks about token usage, cost, or agent activ
 
    `$COPILOT_PLUGIN_DIR` is set by Copilot CLI to the directory containing this plugin. Equivalent absolute path: `~/.copilot/installed-plugins/_direct/abhi-singhs--copilot-token-meter/bin/copilot-tokens`.
 
-2. **Surface the highlights in your reply** — total in/out tokens, cache utilisation, estimated **USD cost**, **context-window %** (most recent call), **burn rate** if shown, number of turns and tool calls, and the per-model / per-tool split when the user is likely to find it interesting.
+2. **Surface the highlights in your reply** — total in/out tokens, cache utilisation, estimated **USD cost** (always pair the dollar figure with "**rough guesstimate**" or "**not a bill**" — it's based on published list prices and does not model Copilot routing, enterprise discounts, BYOK rates, or cache-TTL tiers), **context-window %** (most recent call), **burn rate** if shown, number of turns and tool calls, and the per-model / per-tool split when the user is likely to find it interesting.
 
 3. **If the user asks for a live dashboard**, suggest they run `copilot-tokens watch` in a separate terminal pane — the meter writes a status file (`~/.copilot/state/token-meter/latest.json`) that the watcher refreshes every second, so the two stay in sync, and the dashboard shows a sparkline of recent tokens/min.
 
@@ -47,3 +47,4 @@ The `summary` subcommand already prints a well-formatted, coloured block — pas
 - The plugin's `postToolUse` hook keeps the terminal title bar updated with `↑in ↓out ⟳cache ⊕write 📦N% $cost Nt/M🔧` after every tool call, so the user sees a live "footer" without needing to invoke this skill.
 - The `summary` view also breaks tokens down **per tool** (which tool burned the most input/cache) using proportional attribution: each batched tool call gets a `1/N` share of the next API call's prompt-fold tokens.
 - This skill is read-only; it never modifies session state.
+- **USD cost is a rough guesstimate, not a bill.** Always caveat the dollar figure when surfacing it. It comes from multiplying observed token counts by published Anthropic / OpenAI list prices and does not model GitHub Copilot routing weights, enterprise discounts, BYOK rates, or cache-TTL tiers. Direct users to `/usage` inside Copilot CLI for authoritative billing.
