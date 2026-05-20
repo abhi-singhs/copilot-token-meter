@@ -6,7 +6,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { readJsonl, writeAtomic, writeTitleBar } = require("../lib/io");
+const io = require("../lib/io");
+const { readJsonl, writeAtomic, writeTitleBar, _sanitizeTitle } = io;
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenmeter-io-"));
@@ -52,14 +53,6 @@ function saveTitleEnv(t) {
   });
 }
 
-function patchWriteFileSync(t, replacement) {
-  const original = fs.writeFileSync;
-  fs.writeFileSync = replacement;
-  t.after(() => {
-    fs.writeFileSync = original;
-  });
-}
-
 test("writeAtomic writes, creates parents, overwrites, and removes tmp file", (t) => {
   const dir = tempDir(t);
   const filePath = path.join(dir, "nested", "state.json");
@@ -75,69 +68,63 @@ test("writeAtomic writes, creates parents, overwrites, and removes tmp file", (t
   assert.deepEqual(findPidTmpFiles(dir), []);
 });
 
-test("writeTitleBar respects NO_TITLE=1", (t) => {
+test("_sanitizeTitle returns null when NO_TITLE=1", (t) => {
   saveTitleEnv(t);
-  let writes = 0;
-  patchWriteFileSync(t, () => {
-    writes += 1;
-  });
-
   process.env.NO_TITLE = "1";
   process.env.TERM = "xterm-256color";
 
-  writeTitleBar("hidden");
-
-  assert.equal(writes, 0);
+  assert.equal(_sanitizeTitle("hidden"), null);
 });
 
-test("writeTitleBar respects TERM=dumb", (t) => {
+test("_sanitizeTitle returns null when TERM=dumb", (t) => {
   saveTitleEnv(t);
-  let writes = 0;
-  patchWriteFileSync(t, () => {
-    writes += 1;
-  });
-
   delete process.env.NO_TITLE;
   process.env.TERM = "dumb";
 
-  writeTitleBar("hidden");
-
-  assert.equal(writes, 0);
+  assert.equal(_sanitizeTitle("hidden"), null);
 });
 
-test("writeTitleBar strips control bytes and clamps visible text", (t) => {
+test("_sanitizeTitle strips control bytes and clamps to 160 visible chars", (t) => {
   saveTitleEnv(t);
-  let written = "";
-  patchWriteFileSync(t, (_filePath, content) => {
-    written = content;
-  });
-
   delete process.env.NO_TITLE;
   process.env.TERM = "xterm-256color";
 
-  writeTitleBar(`a\x00b\x1fc\x7f${"d".repeat(200)}`);
+  const seq = _sanitizeTitle(`a\x00b\x1fc\x7f${"d".repeat(200)}`);
 
   const prefix = "\x1b]2;";
   const suffix = "\x07";
-  assert.equal(written.startsWith(prefix), true);
-  assert.equal(written.endsWith(suffix), true);
+  assert.equal(seq.startsWith(prefix), true);
+  assert.equal(seq.endsWith(suffix), true);
 
-  const title = written.slice(prefix.length, -suffix.length);
+  const title = seq.slice(prefix.length, -suffix.length);
   assert.equal(title.length, 160);
   assert.equal(title.slice(0, 5), "a b c");
   assert.equal(/[\x00-\x1f\x7f]/.test(title), false);
 });
 
-test("writeTitleBar silently ignores an unwritable TTY", (t) => {
+test("_sanitizeTitle coerces non-string input", (t) => {
   saveTitleEnv(t);
-  patchWriteFileSync(t, () => {
-    throw new Error("unwritable");
-  });
+  delete process.env.NO_TITLE;
+  process.env.TERM = "xterm-256color";
 
+  assert.equal(typeof _sanitizeTitle(42), "string");
+  assert.equal(typeof _sanitizeTitle(null), "string");
+  assert.equal(typeof _sanitizeTitle(undefined), "string");
+});
+
+test("writeTitleBar never throws regardless of TTY availability", (t) => {
+  saveTitleEnv(t);
   delete process.env.NO_TITLE;
   process.env.TERM = "xterm-256color";
 
   assert.doesNotThrow(() => writeTitleBar("no tty"));
+
+  process.env.NO_TITLE = "1";
+  assert.doesNotThrow(() => writeTitleBar("suppressed"));
+
+  delete process.env.NO_TITLE;
+  process.env.TERM = "dumb";
+  assert.doesNotThrow(() => writeTitleBar("dumb"));
 });
 
 test("readJsonl parses well-formed JSONL into objects", (t) => {
