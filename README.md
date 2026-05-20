@@ -94,13 +94,18 @@ The skill runs `copilot-tokens summary` and replies with the formatted breakdown
 ### From a shell
 
 ```bash
-copilot-tokens                 # one-line summary
-copilot-tokens summary         # detailed multi-line breakdown
-copilot-tokens watch           # live dashboard, refreshes every 1s
-copilot-tokens top             # top sessions by total tokens, all time
-copilot-tokens json            # raw status JSON (for scripting)
-copilot-tokens recompute       # force re-scan of the current session
+copilot-tokens                       # one-line summary
+copilot-tokens summary               # detailed multi-line breakdown
+copilot-tokens watch                 # live dashboard, refreshes every 1s
+copilot-tokens top                   # top sessions by total tokens, all time
+copilot-tokens top --limit 5         # only show the top 5
+copilot-tokens top --since 7d        # only sessions active in the last 7 days
+copilot-tokens json                  # raw status JSON (for scripting)
+copilot-tokens recompute             # force re-scan of the current session
+copilot-tokens --plain summary       # no ANSI colour (also honours NO_COLOR=1)
 ```
+
+Drop-in status-bar configs for tmux, polybar, iTerm2, and WezTerm live in [`examples/`](./examples/).
 
 ### From tmux
 
@@ -108,9 +113,15 @@ copilot-tokens recompute       # force re-scan of the current session
 set -g status-right '#(cat ~/.copilot/state/token-meter/latest.json 2>/dev/null | jq -r .title) | %H:%M'
 ```
 
+See [`examples/tmux.conf`](./examples/tmux.conf) for a fuller version that also surfaces context-window utilisation.
+
 ### From iTerm2 / WezTerm status bar
 
-Read `~/.copilot/state/token-meter/latest.json` and render the `.title` field.
+Read `~/.copilot/state/token-meter/latest.json` and render the `.title` field. See [`examples/iterm2-wezterm.md`](./examples/iterm2-wezterm.md) for the exact iTerm2 Script status-bar component and a WezTerm `update-right-status` Lua snippet.
+
+### From polybar
+
+See [`examples/polybar.ini`](./examples/polybar.ini) for a `custom/script` module that mirrors the title bar.
 
 ## Title bar format
 
@@ -156,6 +167,7 @@ The `summary` view additionally shows:
 | `COPILOT_HOME` | Override the `~/.copilot` location (used in tests / CI). |
 | `COPILOT_TOKENMETER_RESET_ON_STOP=1` | Clear the terminal title bar when the agent stops, instead of leaving the final stats lingering. |
 | `NO_TITLE=1` / `TERM=dumb` | Suppress the OSC 2 title-bar writes entirely. |
+| `NO_COLOR=1` | Disable ANSI colour in `copilot-tokens` output (per [no-color.org](https://no-color.org)). Equivalent to passing `--plain` / `--no-color`. |
 
 ### Custom model metadata
 
@@ -168,6 +180,40 @@ Drop a `models.json` at `~/.copilot/state/token-meter/models.json` to add or ove
   ]
 }
 ```
+
+After editing `models.json`, delete `~/.copilot/state/token-meter/telemetry-cache.json` so the next hook tick re-resolves model metadata.
+
+## Troubleshooting
+
+### The title bar never updates
+
+1. Check `~/.copilot/state/token-meter/hooks.log` — each hook invocation appends a single line. If it's empty, the hooks aren't firing.
+2. **Restart Copilot CLI** after `copilot plugin install` or `copilot plugin update`. Hooks are loaded once per session.
+3. Confirm your terminal honours OSC 2 (`printf '\e]2;hello\a'` should set the title). The plugin no-ops on `TERM=dumb` and when `NO_TITLE=1` is set.
+4. On macOS, Terminal.app's "Tab" title and "Window" title are separate; OSC 2 sets the window title.
+5. If you're running inside `tmux`, tmux owns the outer title — use `set -g set-titles on` and `set -g set-titles-string '#{pane_title}'` to pass the pane title through.
+
+### All numbers show 0
+
+1. Telemetry logs lag the first few prompts. Run a couple of `/help` or a quick prompt, then re-check.
+2. Confirm process logs exist and are recent: `ls -lt ~/.copilot/logs/process-*.log | head`. The plugin only reads logs newer than 14 days.
+3. Force a re-scan: `copilot-tokens recompute`.
+
+### The `input` column reads 0 even though I've sent a long prompt
+
+This is the known `input_tokens: 0` bug in current Copilot CLI builds when prompt caching is active. The plugin repairs it by joining each telemetry record to the matching raw `[DEBUG] data: { ... usage: { prompt_tokens, prompt_tokens_details } }` block via `api_call_id`. The repair only kicks in **after** the raw response is logged — usually one tick later. If it persists across multiple turns, your CLI build may be omitting the `[DEBUG] data:` blocks; check that `~/.copilot/logs/process-*.log` actually contains them.
+
+### My custom `models.json` isn't picked up
+
+Pricing/context-window data is read lazily and cached for the lifetime of each hook process. Edit-then-restart-CLI is enough. If you're running `copilot-tokens` from a long-running watcher, kill and restart it. As a stronger reset, also delete `~/.copilot/state/token-meter/telemetry-cache.json`.
+
+### Hook errors
+
+Check `~/.copilot/state/token-meter/errors.log`. The hook script is wrapped so any error is logged there and the process exits 0 — a hook failure never blocks Copilot CLI. If you see repeated errors, please file an issue with the relevant log excerpt and your Copilot CLI version.
+
+### `copilot-tokens` colours are mangled in tmux / less / scripts
+
+Pass `--plain` (or `--no-color`), or set `NO_COLOR=1` in the environment. The context-window bar falls back to a plain-ASCII `[##  ]` indicator.
 
 ## How accurate are the numbers?
 
