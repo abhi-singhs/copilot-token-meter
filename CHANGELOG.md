@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-20
+
 ### Added
 - `LICENSE` (MIT), `CHANGELOG.md`, and `repository` / `homepage` / `bugs` URLs in `plugin.json` for marketplace readiness.
+- ESLint flat config (`eslint.config.js`) + `npm run lint` script + a CI lint job (Ubuntu, Node 22). `eslint` is the only `devDependencies` entry; runtime stays dependency-free.
+- `--plain` / `--no-color` flag on `copilot-tokens` and support for the `NO_COLOR=1` env var (per [no-color.org](https://no-color.org)). Plain mode also swaps the context-window block characters (`▮`/`▯`) for an ASCII `[##  ]` bar so output pipes cleanly into tmux / `jq` / `less`.
+- `copilot-tokens top --limit N` (default 20) and `top --since <duration>` filters; durations accept `s`/`m`/`h`/`d`/`w` suffixes (e.g. `30m`, `24h`, `7d`, `2w`).
+- `reasoning_effort` is now surfaced in the `By model` row of `summary` — single tier (e.g. `gpt-5.4 (high)`) or modal-plus suffix when mixed (`gpt-5.4 (high+)`). Anthropic models continue to show no effort tag (the field isn't reported).
+- Unit tests for `lib/io.js` (`writeAtomic`, `writeTitleBar`, `readJsonl`), plus `parseDuration` (in `lib/format.js`) and `dominantEffort` (in `lib/aggregate.js`). Total test count grew from 17 to 30.
+- `examples/` directory with drop-in status-bar snippets for tmux, polybar, iTerm2, and WezTerm.
+- `CONTRIBUTING.md` describing the dependency-free policy, local-checkout install loop, commit conventions, and CHANGELOG discipline.
+- README "Troubleshooting" section covering the common failure modes (title bar not updating, zero numbers, the `input_tokens: 0` repair window, custom `models.json` cache refresh, hook errors, mangled colours in pipes).
 
 ### Changed
 - `skills/tokens/SKILL.md` no longer hardcodes the `_direct/abhi-singhs--copilot-token-meter` install path; it relies solely on `$COPILOT_PLUGIN_DIR`, which is portable across local, direct, and marketplace installs.
@@ -33,5 +43,6 @@ Initial release.
 - `node --test` unit suite (19 tests) covering formatting, pricing, telemetry parsing, and aggregation.
 - GitHub Actions CI matrix: Node 18 / 20 / 22 on Ubuntu / macOS / Windows.
 
-[Unreleased]: https://github.com/abhi-singhs/copilot-token-meter/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/abhi-singhs/copilot-token-meter/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/abhi-singhs/copilot-token-meter/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/abhi-singhs/copilot-token-meter/releases/tag/v0.1.0
