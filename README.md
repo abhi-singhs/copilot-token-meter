@@ -117,7 +117,7 @@ Read `~/.copilot/state/token-meter/latest.json` and render the `.title` field.
 ## Title bar format
 
 ```
-copilot[opus-4.7-1m-internal] ↑12.3k ↓4.2k ⟳88.0k ⊕5.1k 🧠1.2k 7t/23🔧
+copilot[opus-4.7-1m] ↑12.3k ↓4.2k ⟳88.0k ⊕5.1k 🧠1.2k 7t/23🔧
 ```
 
 | Symbol | Meaning |
