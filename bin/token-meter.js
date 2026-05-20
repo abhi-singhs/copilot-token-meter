@@ -34,6 +34,9 @@ const TELEMETRY_CACHE = path.join(STATE_DIR, "telemetry-cache.json");
 const LOG_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 // Bound the per-session list of "seen event IDs" so the cache file can't grow unboundedly.
 const MAX_SEEN_EVENT_IDS = 10000;
+// Bound the global (process-wide) map of API response usage records, keyed by msg-id.
+const MAX_API_RESPONSES = 20000;
+const TELEMETRY_CACHE_SCHEMA = 2;
 
 function safeMain() {
   let hookName = "?";
@@ -193,9 +196,13 @@ function listProcessLogs() {
 function loadTelemetryCache() {
   try {
     const c = JSON.parse(fs.readFileSync(TELEMETRY_CACHE, "utf8"));
-    if (c && c.schema === 1 && c.sessions) return c;
+    if (c && c.schema === TELEMETRY_CACHE_SCHEMA && c.sessions) {
+      if (!c.apiResponses) c.apiResponses = {};
+      if (!Array.isArray(c.apiResponsesOrder)) c.apiResponsesOrder = [];
+      return c;
+    }
   } catch (_) {}
-  return { schema: 1, sessions: {} };
+  return { schema: TELEMETRY_CACHE_SCHEMA, sessions: {}, apiResponses: {}, apiResponsesOrder: [] };
 }
 
 function saveTelemetryCache(cache) {
@@ -281,8 +288,85 @@ function parseTelemetryBlocks(text, sessionId, seen) {
   return { records, committedEnd: lastCommittedEnd };
 }
 
+// Generic JSON-block extractor: starting at `from`, find the next `header`,
+// skip past it to the first `{`, then balance braces (respecting strings)
+// until the matching closing `}`. Returns { block, blockEnd } or null if no
+// complete block is available yet. `blockEnd` is the index of the closing `}`.
+function findJsonBlock(text, from, header) {
+  const headerIdx = text.indexOf(header, from);
+  if (headerIdx === -1) return null;
+  let p = headerIdx + header.length;
+  while (p < text.length && text[p] !== "{") p++;
+  if (p >= text.length) return { incomplete: true, headerIdx };
+
+  let depth = 0, inString = false, escape = false, blockEnd = -1;
+  for (let j = p; j < text.length; j++) {
+    const c = text[j];
+    if (inString) {
+      if (escape) escape = false;
+      else if (c === "\\") escape = true;
+      else if (c === '"') inString = false;
+    } else {
+      if (c === '"') inString = true;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) { blockEnd = j; break; }
+      }
+    }
+  }
+  if (blockEnd === -1) return { incomplete: true, headerIdx };
+  return { headerIdx, braceStart: p, blockEnd, block: text.slice(p, blockEnd + 1) };
+}
+
+// Scan a buffer for HTTP-response `data:` blocks Copilot CLI logs. These hold
+// the raw Anthropic/OpenAI response JSON, including the only reliable copy of
+// `usage.prompt_tokens` and `prompt_tokens_details.{cached_tokens,
+// cache_creation_tokens}`. The CLI's own `[Telemetry] cli.telemetry` block
+// reports `input_tokens: 0` on every turn that involves prompt caching (a CLI
+// bug), so we derive the real uncached input as
+//   prompt_tokens - cached_tokens - cache_creation_tokens
+// and use it to override that zero. Returns the parsed records and a
+// committedEnd so callers can resume cleanly across partial flushes.
+function parseApiResponseBlocks(text) {
+  const HEADER = "[DEBUG] data:\n";
+  const records = [];
+  let i = 0;
+  let lastCommittedEnd = 0;
+
+  while (true) {
+    const found = findJsonBlock(text, i, HEADER);
+    if (!found) { lastCommittedEnd = text.length; break; }
+    if (found.incomplete) {
+      // Header at the tail; resume next pass.
+      break;
+    }
+
+    try {
+      const obj = JSON.parse(found.block);
+      if (obj && typeof obj.id === "string" && obj.usage && typeof obj.usage === "object") {
+        const u = obj.usage;
+        const d = (u.prompt_tokens_details && typeof u.prompt_tokens_details === "object") ? u.prompt_tokens_details : {};
+        records.push({
+          msgId: obj.id,
+          model: obj.model || null,
+          promptTokens:        n(u.prompt_tokens),
+          completionTokens:    n(u.completion_tokens),
+          cachedTokens:        n(d.cached_tokens),
+          cacheCreationTokens: n(d.cache_creation_tokens),
+        });
+      }
+    } catch (_) { /* not a JSON response body — skip */ }
+
+    i = found.blockEnd + 1;
+    lastCommittedEnd = i;
+  }
+
+  return { records, committedEnd: lastCommittedEnd };
+}
+
 function loadTelemetryUsage(sessionId) {
-  if (!sessionId) return { usage: [], quota: null };
+  if (!sessionId) return { usage: [], quota: null, apiResponses: {} };
   const cache = loadTelemetryCache();
   if (!cache.sessions[sessionId]) {
     cache.sessions[sessionId] = { logs: {}, seenEventIds: [], usage: [], quota: null };
@@ -301,21 +385,49 @@ function loadTelemetryUsage(sessionId) {
       const buf = Buffer.alloc(len);
       fs.readSync(fd, buf, 0, len, prev.offset);
       const text = buf.toString("utf8");
-      const { records, committedEnd } = parseTelemetryBlocks(text, sessionId, seen);
 
-      sess.logs[log.path] = { offset: prev.offset + committedEnd, mtimeMs: log.mtimeMs };
-      for (const r of records) {
+      const telem = parseTelemetryBlocks(text, sessionId, seen);
+      const apiResp = parseApiResponseBlocks(text);
+
+      // Advance the offset only as far as both parsers have fully committed —
+      // otherwise a partial block in either stream would be skipped on the
+      // next pass. parseTelemetryBlocks only scopes to this session, so we
+      // need every committed byte to be safe for both.
+      const committed = Math.min(telem.committedEnd, apiResp.committedEnd);
+      sess.logs[log.path] = { offset: prev.offset + committed, mtimeMs: log.mtimeMs };
+
+      for (const r of telem.records) {
         if (r.__kind === "quota") sess.quota = r;
         else sess.usage.push(r);
+      }
+      for (const r of apiResp.records) {
+        if (!r.msgId) continue;
+        if (!Object.prototype.hasOwnProperty.call(cache.apiResponses, r.msgId)) {
+          cache.apiResponsesOrder.push(r.msgId);
+        }
+        cache.apiResponses[r.msgId] = {
+          model:               r.model,
+          promptTokens:        r.promptTokens,
+          completionTokens:    r.completionTokens,
+          cachedTokens:        r.cachedTokens,
+          cacheCreationTokens: r.cacheCreationTokens,
+        };
       }
     } finally {
       try { fs.closeSync(fd); } catch (_) {}
     }
   }
 
+  // Cap the global API-response map (LRU-ish — drop oldest insertion order).
+  if (cache.apiResponsesOrder.length > MAX_API_RESPONSES) {
+    const drop = cache.apiResponsesOrder.length - MAX_API_RESPONSES;
+    for (let k = 0; k < drop; k++) delete cache.apiResponses[cache.apiResponsesOrder[k]];
+    cache.apiResponsesOrder = cache.apiResponsesOrder.slice(drop);
+  }
+
   sess.seenEventIds = Array.from(seen).slice(-MAX_SEEN_EVENT_IDS);
   saveTelemetryCache(cache);
-  return { usage: sess.usage, quota: sess.quota };
+  return { usage: sess.usage, quota: sess.quota, apiResponses: cache.apiResponses };
 }
 
 
@@ -464,14 +576,33 @@ function aggregate(events, telemetry) {
   // ── Fold in telemetry-log assistant_usage records (the real source of truth
   //    for input/cache/reasoning/cost on current Copilot CLI builds, which
   //    don't write `assistant.usage` events to events.jsonl).
+  //
+  //    Workaround: current Copilot CLI builds always emit `input_tokens: 0`
+  //    in the assistant_usage telemetry even when there's real uncached
+  //    prompt content. The raw HTTP response logged just above each
+  //    telemetry block has the truthful number under
+  //    `usage.prompt_tokens - prompt_tokens_details.cached_tokens
+  //     - prompt_tokens_details.cache_creation_tokens`. We index those by
+  //    `id` (== telemetry's `api_call_id`) in `loadTelemetryUsage` and use
+  //    them here to repair the zero.
+  const apiResponses = (telemetry && telemetry.apiResponses) || {};
+  function repairedInput(r, mt) {
+    const reported = n(mt.input_tokens);
+    if (reported > 0) return reported;
+    const api = r.api_call_id ? apiResponses[r.api_call_id] : null;
+    if (!api) return reported;
+    const derived = api.promptTokens - api.cachedTokens - api.cacheCreationTokens;
+    return derived > 0 ? derived : reported;
+  }
   const haveTelemetry = telemetry.usage && telemetry.usage.length > 0;
   if (haveTelemetry) {
     for (const r of telemetry.usage) {
       const m  = r.model || lastModel || "unknown";
       if (r.model) lastModel = r.model;
       const mt = r.metrics || {};
+      const inTok = repairedInput(r, mt);
       const bucket = perModel[m] || (perModel[m] = bucketInit());
-      bucket.inputTokens      += n(mt.input_tokens);
+      bucket.inputTokens      += inTok;
       bucket.outputTokens     += n(mt.output_tokens);
       bucket.cacheReadTokens  += n(mt.cache_read_tokens);
       bucket.cacheWriteTokens += n(mt.cache_write_tokens);
@@ -480,7 +611,7 @@ function aggregate(events, telemetry) {
       bucket.apiCalls         += 1;
       bucket.durationMs       += n(mt.duration);
 
-      totals.inputTokens      += n(mt.input_tokens);
+      totals.inputTokens      += inTok;
       totals.outputTokens     += n(mt.output_tokens);
       totals.cacheReadTokens  += n(mt.cache_read_tokens);
       totals.cacheWriteTokens += n(mt.cache_write_tokens);
@@ -493,7 +624,7 @@ function aggregate(events, telemetry) {
       if (turnId != null) {
         const turn = ensureTurn(turnId, m);
         if (turn) {
-          turn.inputTokens      += n(mt.input_tokens);
+          turn.inputTokens      += inTok;
           turn.outputTokens     += n(mt.output_tokens);
           turn.cacheReadTokens  += n(mt.cache_read_tokens);
           turn.cacheWriteTokens += n(mt.cache_write_tokens);
