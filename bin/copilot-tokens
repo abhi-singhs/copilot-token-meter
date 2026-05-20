@@ -202,7 +202,8 @@ function renderSummary(st) {
   if (models.length > 1) {
     lines.push(c("bold", "By model"));
     for (const [m, b] of models) {
-      lines.push("  " + pad(m, 30)
+      const label = b.dominantEffort ? m + " (" + b.dominantEffort + ")" : m;
+      lines.push("  " + pad(label, 36)
         + c("cyan",  "↑" + formatTokens(b.inputTokens).padStart(8))
         + c("green", " ↓" + formatTokens(b.outputTokens).padStart(8))
         + c("blue",  " ⟳" + formatTokens(b.cacheReadTokens).padStart(8))

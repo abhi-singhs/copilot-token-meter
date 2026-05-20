@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { aggregate } = require("../lib/aggregate");
+const { aggregate, dominantEffort } = require("../lib/aggregate");
 
 function telemetryUsage(overrides) {
   return {
@@ -171,4 +171,37 @@ test("counts turns, tool calls, and user messages exactly", () => {
   assert.equal(agg.totals.turns, 3);
   assert.equal(agg.totals.toolCalls, 5);
   assert.equal(agg.totals.userMessages, 2);
+});
+
+test("dominantEffort returns null, single label, or modal-plus suffix", () => {
+  assert.equal(dominantEffort(null), null);
+  assert.equal(dominantEffort({}), null);
+  assert.equal(dominantEffort({ low: 0 }), null);
+  assert.equal(dominantEffort({ high: 4 }), "high");
+  assert.equal(dominantEffort({ high: 4, medium: 2 }), "high+");
+  assert.equal(dominantEffort({ medium: 5, low: 1, high: 1 }), "medium+");
+});
+
+test("aggregates reasoning_effort per model and surfaces dominantEffort", () => {
+  const telemetry = {
+    usage: [
+      telemetryUsage({ event_id: "e1", model: "gpt-5.4", reasoning_effort: "high",
+        metrics: { input_tokens: 10, output_tokens: 1 } }),
+      telemetryUsage({ event_id: "e2", model: "gpt-5.4", reasoning_effort: "high",
+        metrics: { input_tokens: 10, output_tokens: 1 } }),
+      telemetryUsage({ event_id: "e3", model: "gpt-5.4", reasoning_effort: "medium",
+        metrics: { input_tokens: 10, output_tokens: 1 } }),
+      telemetryUsage({ event_id: "e4", model: "claude-sonnet-4.6",
+        metrics: { input_tokens: 5, output_tokens: 1 } }),
+    ],
+    quota: null,
+    apiResponses: {},
+  };
+
+  const agg = aggregate([], telemetry);
+
+  assert.equal(agg.perModel["gpt-5.4"].efforts.high, 2);
+  assert.equal(agg.perModel["gpt-5.4"].efforts.medium, 1);
+  assert.equal(agg.perModel["gpt-5.4"].dominantEffort, "high+");
+  assert.equal(agg.perModel["claude-sonnet-4.6"].dominantEffort, null);
 });
