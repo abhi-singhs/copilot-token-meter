@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { n, formatTokens, formatMs, pad, formatTitle } = require("../lib/format");
+const { n, formatTokens, formatMs, pad, formatTitle, parseDuration } = require("../lib/format");
 
 test("n coerces only finite numbers", () => {
   assert.equal(n(42), 42);
@@ -60,4 +60,27 @@ test("formatTitle builds compact terminal title text", () => {
     formatTitle({ lastModel: null, totals: { inputTokens: 0, outputTokens: 0, turns: 0, toolCalls: 0 } }),
     "copilot[copilot] ↑0 ↓0 0t/0🔧",
   );
+});
+
+test("parseDuration accepts s/m/h/d/w suffixes and bare seconds", () => {
+  assert.equal(parseDuration("0"), 0);
+  assert.equal(parseDuration("30"), 30 * 1000);
+  assert.equal(parseDuration("30s"), 30 * 1000);
+  assert.equal(parseDuration("5m"), 5 * 60_000);
+  assert.equal(parseDuration("2h"), 2 * 3_600_000);
+  assert.equal(parseDuration("7d"), 7 * 86_400_000);
+  assert.equal(parseDuration("1w"), 7 * 86_400_000);
+  assert.equal(parseDuration(" 10m "), 10 * 60_000);
+  assert.equal(parseDuration("1.5h"), 1.5 * 3_600_000);
+  assert.equal(parseDuration("2H"), 2 * 3_600_000);
+});
+
+test("parseDuration rejects malformed input", () => {
+  assert.equal(parseDuration(""), null);
+  assert.equal(parseDuration(null), null);
+  assert.equal(parseDuration(undefined), null);
+  assert.equal(parseDuration("abc"), null);
+  assert.equal(parseDuration("10x"), null);
+  assert.equal(parseDuration("-5m"), null);
+  assert.equal(parseDuration("5 m extra"), null);
 });
