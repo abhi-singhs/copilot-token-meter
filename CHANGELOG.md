@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `skills/tokens/SKILL.md` no longer hardcodes the `_direct/abhi-singhs--copilot-token-meter` install path; it relies solely on `$COPILOT_PLUGIN_DIR`, which is portable across local, direct, and marketplace installs.
 - README install instructions point at the marketplace coordinate (`abhi-singhs/copilot-token-meter`) and de-emphasise local checkouts.
+- Optional user override file renamed from `pricing.json` to `models.json` and now only carries `match` + `contextWindow` entries.
+
+### Removed
+- USD cost estimation. The previous Anthropic / OpenAI list-price multiplication produced numbers that did not reflect GitHub Copilot routing, enterprise discounts, BYOK rates, cache-TTL tiers, or promotional credits, so it has been removed entirely. Use `/usage` inside Copilot CLI for authoritative billing. Removed surfaces: `Cost` section and per-row USD columns in `summary`, USD column in `top`, `~`USD in the one-line `status`, `usdCost`/`usdCostKnown` fields from status JSON and history snapshots, `costForBucket` / `formatUSD` from `lib/pricing.js`, and all related disclaimers.
 
 ## [0.1.0] - 2026-05-19
 

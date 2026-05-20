@@ -125,7 +125,6 @@ function appendHistorySnapshot(sessionId, agg) {
       turns:            t.turns,
       toolCalls:        t.toolCalls,
       promptTokens:     t.promptTokens,
-      usdCost:          t.usdCost,
     }) + "\n";
     fs.appendFileSync(hist, line);
     // Best-effort truncation: if the file is large (> ~1MB), trim to the

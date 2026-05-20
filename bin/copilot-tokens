@@ -19,7 +19,7 @@ const { readJsonl }              = require("../lib/io");
 const { aggregate }              = require("../lib/aggregate");
 const { loadTelemetryUsage }     = require("../lib/telemetry");
 const { formatTokens, formatMs, pad, formatTitle } = require("../lib/format");
-const { formatUSD, contextWindow } = require("../lib/pricing");
+const { contextWindow } = require("../lib/pricing");
 
 const HOME      = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
 const STATE_DIR = path.join(HOME, "state", "token-meter");
@@ -118,7 +118,6 @@ function renderStatusLine(st) {
   if (t.contextUtilization != null) {
     parts.push(c("yel", "📦" + (t.contextUtilization * 100).toFixed(0) + "%"));
   }
-  parts.push(c("gray", "~" + formatUSD(t.usdCost)));
   parts.push(c("gray", t.turns + "t/" + t.toolCalls + "🔧"));
   return parts.join(" ");
 }
@@ -151,13 +150,12 @@ function renderSummary(st) {
   lines.push("  " + pad("total billed*", 18) + c("yel",   formatTokens(t.billedTokens || 0).padStart(10))+ "  " + c("gray", (t.billedTokens || 0).toLocaleString()));
   lines.push("");
 
-  lines.push(c("bold", "Cost") + c("yel", "  (rough guesstimate — see disclaimer below)") + (t.usdCostKnown ? "" : c("gray", "  (some models unpriced)")));
-  lines.push("  " + pad("estimated USD",  18) + c("green", formatUSD(t.usdCost).padStart(10)) + c("gray", "  ± unknown — not a bill"));
   if (t.contextUtilization != null) {
-    lines.push("  " + pad("context window", 18) + contextBar(t.contextUtilization)
+    lines.push(c("bold", "Context window"));
+    lines.push("  " + pad("utilization", 18) + contextBar(t.contextUtilization)
       + c("gray", "  (" + (t.lastCallPromptTokens || 0).toLocaleString() + " / " + (t.contextWindow || 0).toLocaleString() + ", most recent call)"));
+    lines.push("");
   }
-  lines.push("");
 
   lines.push(c("bold", "Activity"));
   lines.push("  " + pad("turns",         18) + String(t.turns).padStart(10));
@@ -192,7 +190,6 @@ function renderSummary(st) {
         + c("green", " ↓" + formatTokens(b.outputTokens).padStart(8))
         + c("blue",  " ⟳" + formatTokens(b.cacheReadTokens).padStart(8))
         + c("mag",   " ⊕" + formatTokens(b.cacheWriteTokens).padStart(8))
-        + c("green", " " + formatUSD(b.usdCost).padStart(8))
         + c("gray",  " " + b.apiCalls + " calls"));
     }
     lines.push("");
@@ -209,7 +206,7 @@ function renderSummary(st) {
         + c("cyan",  " ↑" + formatTokens(tool.inputTokens).padStart(7))
         + c("green", " ↓" + formatTokens(tool.outputTokens).padStart(7))
         + c("blue",  " ⟳" + formatTokens(tool.cacheReadTokens).padStart(7))
-        + c("green", " " + formatUSD(tool.usdCost).padStart(8)));
+        + c("mag",   " ⊕" + formatTokens(tool.cacheWriteTokens).padStart(7)));
     }
     lines.push("");
   }
@@ -224,7 +221,6 @@ function renderSummary(st) {
     lines.push("  " + pad("output",        18) + c("green", formatTokens(sub.outputTokens).padStart(10)));
     lines.push("  " + pad("cache read",    18) + c("blue",  formatTokens(sub.cacheReadTokens).padStart(10)));
     lines.push("  " + pad("cache write",   18) + c("mag",   formatTokens(sub.cacheWriteTokens).padStart(10)));
-    lines.push("  " + pad("estimated USD", 18) + c("green", formatUSD(sub.usdCost).padStart(10)));
     const subModels = Object.keys(sub.perModel || {});
     if (subModels.length > 0) {
       lines.push("  " + pad("models", 18) + subModels.join(", "));
@@ -261,14 +257,7 @@ function renderSummary(st) {
     lines.push("");
   }
 
-  lines.push(c("gray", "* Billed tokens = input + output + cache_write + cache_read/10 (per Anthropic pricing)."));
-  lines.push("");
-  lines.push(c("yel", "⚠  USD figures are a rough guesstimate, not a bill."));
-  lines.push(c("gray", "   They multiply observed token counts by published Anthropic/OpenAI list prices."));
-  lines.push(c("gray", "   Your actual charges may differ — GitHub Copilot routing, enterprise discounts,"));
-  lines.push(c("gray", "   BYOK rates, cache-TTL tiers, and tier promotions are NOT modeled."));
-  lines.push(c("gray", "   For authoritative billing, use `/usage` inside Copilot CLI or your provider's console."));
-  lines.push(c("gray", "   Override pricing at ~/.copilot/state/token-meter/pricing.json."));
+  lines.push(c("gray", "* Billed tokens = input + output + cache_write + cache_read/10 (Anthropic-style)."));
   console.log(lines.join("\n"));
 }
 
@@ -372,7 +361,7 @@ function cmdTop() {
     rows.push({
       id, model: st.model, in: t.inputTokens, out: t.outputTokens,
       cr: t.cacheReadTokens, cw: t.cacheWriteTokens,
-      turns: t.turns, tools: t.toolCalls, usd: t.usdCost,
+      turns: t.turns, tools: t.toolCalls,
       mtime: fs.statSync(ev).mtimeMs,
     });
   }
@@ -381,7 +370,7 @@ function cmdTop() {
     pad("session", 38) + pad("model", 22) +
     pad("↑in", 10) + pad("↓out", 10) +
     pad("⟳read", 10) + pad("⊕write", 10) +
-    pad("USD", 10) + pad("turns", 7) + pad("tools", 7)));
+    pad("turns", 7) + pad("tools", 7)));
   for (const r of rows.slice(0, 20)) {
     console.log(
       pad(r.id, 38) + pad((r.model || "?").replace(/^claude-/, ""), 22) +
@@ -389,7 +378,6 @@ function cmdTop() {
       pad(c("green", formatTokens(r.out)), 10) +
       pad(c("blue",  formatTokens(r.cr)),  10) +
       pad(c("mag",   formatTokens(r.cw)),  10) +
-      pad(c("green", formatUSD(r.usd)),    10) +
       pad(String(r.turns), 7) + pad(String(r.tools), 7));
   }
 }
@@ -412,7 +400,6 @@ function cmdHelp() {
     "  " + path.join(STATE_DIR, "<sessionId>.json"),
     "  " + path.join(STATE_DIR, "history-<sessionId>.jsonl"),
     "  " + path.join(STATE_DIR, "current"),
-    "  " + path.join(STATE_DIR, "pricing.json") + c("gray", "  (optional user override)"),
   ].join("\n"));
 }
 
