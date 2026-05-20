@@ -17,7 +17,7 @@ When the user invokes `/tokens` (or asks about token usage, cost, or agent activ
    "$COPILOT_PLUGIN_DIR/bin/copilot-tokens" summary
    ```
 
-   `$COPILOT_PLUGIN_DIR` is set by Copilot CLI to the directory containing this plugin. Equivalent absolute path: `~/.copilot/installed-plugins/_direct/abhi-singhs--copilot-token-meter/bin/copilot-tokens`.
+   `$COPILOT_PLUGIN_DIR` is set by Copilot CLI to the directory containing this plugin, regardless of how it was installed (marketplace or local). Always invoke the binary through that variable — do not hardcode an absolute path.
 
 2. **Surface the highlights in your reply** — total in/out tokens, cache utilisation, estimated **USD cost** (always pair the dollar figure with "**rough guesstimate**" or "**not a bill**" — it's based on published list prices and does not model Copilot routing, enterprise discounts, BYOK rates, or cache-TTL tiers), **context-window %** (most recent call), **burn rate** if shown, number of turns and tool calls, and the per-model / per-tool split when the user is likely to find it interesting.
 

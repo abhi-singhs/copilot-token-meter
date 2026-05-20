@@ -33,18 +33,18 @@ The hook script merges the two sources, aggregates totals, and writes an OSC 2 t
 The plugin is a self-contained directory you can install into Copilot CLI with `copilot plugin install`.
 
 ```bash
-# From a local checkout (recommended while iterating):
-copilot plugin install /path/to/copilot-token-meter
+# From the GitHub marketplace (recommended):
+copilot plugin install abhi-singhs/copilot-token-meter
 
-# Or once pushed to GitHub:
-copilot plugin install <owner>/copilot-token-meter
+# Or from a local checkout (handy while developing the plugin itself):
+copilot plugin install /path/to/copilot-token-meter
 ```
 
-`copilot plugin install <path>` snapshots the folder into
-`~/.copilot/installed-plugins/_direct/copilot-token-meter/` and registers it
-in `~/.copilot/config.json` with `source: { source: "local", path: "<your path>" }`.
+The marketplace install snapshots the plugin into Copilot CLI's plugin cache and
+registers it in `~/.copilot/config.json`. Local installs additionally record the
+source path so `copilot plugin update <name>` can re-snapshot after edits.
 
-After editing files in this folder, refresh the snapshot:
+After editing files in a local checkout, refresh the snapshot:
 
 ```bash
 copilot plugin update copilot-token-meter

@@ -3,9 +3,21 @@
   "description": "Live token meter for GitHub Copilot CLI. Tracks input/output/cache tokens, cost, and quota for every prompt and agent activity. Shows totals in the terminal title bar (always-visible footer), writes a status file for tmux/iTerm/Kitty integration, and exposes a /tokens slash command and a copilot-tokens CLI (status|watch|summary|top).",
   "version": "0.1.0",
   "author": {
-    "name": "abhi-singhs"
+    "name": "Abhi Singh",
+    "url": "https://github.com/abhi-singhs"
   },
   "license": "MIT",
+  "homepage": "https://github.com/abhi-singhs/copilot-token-meter#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abhi-singhs/copilot-token-meter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/abhi-singhs/copilot-token-meter/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "keywords": ["tokens", "metrics", "usage", "footer", "statusline", "cost", "observability"],
   "skills": "skills/",
   "hooks": "hooks.json"
