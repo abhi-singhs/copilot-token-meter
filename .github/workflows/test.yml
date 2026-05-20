@@ -20,6 +20,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - name: Syntax check
         run: node --check bin/token-meter.js bin/copilot-tokens lib/*.js
+      - name: Lint
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
+        run: |
+          npm install --no-audit --no-fund --silent
+          npm run lint
       - name: Unit tests
         run: node --test test/
       - name: Smoke test CLI help

@@ -13,8 +13,14 @@
   "bugs": {
     "url": "https://github.com/abhi-singhs/copilot-token-meter/issues"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4"
   }
 }
