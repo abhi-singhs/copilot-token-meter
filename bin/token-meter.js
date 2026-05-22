@@ -168,6 +168,21 @@ function main() {
     if (sessionId) {
       fs.mkdirSync(STATE_DIR, { recursive: true });
       writeAtomic(path.join(STATE_DIR, "current"), sessionId + "\n");
+
+      // On sessionStart the events.jsonl typically doesn't exist yet. Seed a
+      // fresh zero-state per-session cache so the custom status line for THIS
+      // session reads its own data immediately instead of falling through to
+      // a sibling session's stale totals.
+      if (args.hook === "sessionStart") {
+        const cached = path.join(STATE_DIR, sessionId + ".json");
+        if (!fs.existsSync(cached)) {
+          const emptyAgg = aggregate([], null);
+          const status   = buildStatusJson(emptyAgg, sessionId, eventsPath);
+          const body     = JSON.stringify(status, null, 2);
+          writeAtomic(cached, body);
+          writeAtomic(path.join(STATE_DIR, "latest.json"), body);
+        }
+      }
     }
     return;
   }

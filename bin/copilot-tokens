@@ -495,7 +495,14 @@ function readStdinPayloadIfAny() {
 function cmdStatusline() {
   try {
     const payload = readStdinPayloadIfAny();
-    const sessionId = (payload && payload.session_id) || mostRecentSessionId();
+    // When Copilot CLI provides a session_id in the stdin payload, treat it
+    // as authoritative. Each running Copilot session calls statusLine.command
+    // with its own session_id, so the per-session cache is the ONLY cache we
+    // may read — using latest.json or another session's file here would leak
+    // an older session's totals into a freshly-started session.
+    const payloadSessionId = (payload && payload.session_id) || null;
+    const sessionId = payloadSessionId || mostRecentSessionId();
+
     let st = null;
     if (sessionId) {
       const cached = path.join(STATE_DIR, sessionId + ".json");
@@ -503,15 +510,25 @@ function cmdStatusline() {
         try { st = JSON.parse(fs.readFileSync(cached, "utf8")); } catch (_) {}
       }
     }
-    if (!st) {
+
+    // Fall back to latest.json ONLY when no payload session_id was provided
+    // (e.g. interactive testing of the subcommand outside Copilot CLI). With
+    // a payload session_id present, the only acceptable cache is its own.
+    if (!st && !payloadSessionId) {
       const latest = path.join(STATE_DIR, "latest.json");
       if (fs.existsSync(latest)) {
         try { st = JSON.parse(fs.readFileSync(latest, "utf8")); } catch (_) {}
       }
     }
+
+    // When we have a payload but no cache yet (brand-new session whose
+    // sessionStart hook hasn't seeded a cache yet, or running statusLine in
+    // a race with the hook), derive a status from Copilot's own running
+    // totals so the line still reflects THIS session.
     if (!st && payload && payload.context_window) {
       const w = payload.context_window;
       st = {
+        sessionId: payloadSessionId,
         totals: {
           inputTokens:      w.total_input_tokens       || 0,
           outputTokens:     w.total_output_tokens      || 0,
@@ -523,6 +540,21 @@ function cmdStatusline() {
         },
       };
     }
+
+    // If Copilot identified a session but provided no context_window block
+    // either, render a clean zero state rather than leaving the previous
+    // session's line lingering in the footer.
+    if (!st && payloadSessionId) {
+      st = {
+        sessionId: payloadSessionId,
+        totals: {
+          inputTokens: 0, outputTokens: 0,
+          cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+          turns: 0, toolCalls: 0,
+        },
+      };
+    }
+
     if (!st) return;
     // The status line output is captured by Copilot CLI (not a TTY), so the
     // global USE_COLOR check would disable colour. Copilot's footer renderer

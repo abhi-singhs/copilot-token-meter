@@ -7,16 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-22
+
+### Fixed
+- **Status line no longer bleeds tokens across Copilot sessions.** When a brand-new Copilot CLI session started, its `statusLine.command` was rendering the *previous* session's token totals because the renderer fell back to the shared `latest.json` cache whenever the new session's per-session cache hadn't been seeded yet. The custom status line now treats `payload.session_id` as authoritative: it only reads that session's own per-session cache (or, if no cache exists yet, derives totals from Copilot's own `context_window.total_*_tokens` payload — which is zero at session start). The `sessionStart` hook also now seeds a clean zero-state per-session cache up front so the very first `statusLine.command` invocation in a new session reads its own data, never a sibling session's. Added 5 regression tests covering the cross-session isolation and the seeding behaviour.
+
+## [0.2.0] - 2026-05-20
+
 ### Added
 - **Custom status line for Copilot CLI 1.0.52+.** New `copilot-tokens statusline` subcommand purpose-built for Copilot CLI's `statusLine.command` slot (the `custom` row in `/footer`). Reads the session JSON payload Copilot pipes in on stdin, joins it with the plugin's cached telemetry / repair data, and prints a compact ANSI-coloured line — `↑12.3k ↓45.6k ⟳88.0k ⊕5.1k 🧠1.2k · 📦42% · 7t/23🔧` — that drops straight into the Copilot footer alongside `directory`, `branch`, `effort`, `context-used`, and `quota`. Live context % is sourced from the payload's `context_window.current_context_used_percentage` (falling back to the plugin's events-derived estimate). All errors are swallowed so a misbehaving statusline never breaks Copilot's UI. Honours `--plain` / `NO_COLOR=1`.
 - `copilot-tokens statusline-command` companion subcommand that prints the exact absolute-path command string to paste into `~/.copilot/config.json` under `statusLine.command`.
 - `formatStatusLine(agg, payload, options)` helper in `lib/format.js` (with 6 new unit tests covering colour toggling, payload-vs-aggregator preference, zero-suppression, and bounds clamping).
 - `examples/copilot-statusline.md` ready-to-merge config snippet + walkthrough for `~/.copilot/config.json`.
 - README "As Copilot CLI's custom status line" section with the three-step wire-up and a note on running both the title-bar and footer-line surfaces side-by-side.
-
-## [0.2.0] - 2026-05-20
-
-### Added
 - `LICENSE` (MIT), `CHANGELOG.md`, and `repository` / `homepage` / `bugs` URLs in `plugin.json` for marketplace readiness.
 - ESLint flat config (`eslint.config.js`) + `npm run lint` script + a CI lint job (Ubuntu, Node 22). `eslint` is the only `devDependencies` entry; runtime stays dependency-free.
 - `--plain` / `--no-color` flag on `copilot-tokens` and support for the `NO_COLOR=1` env var (per [no-color.org](https://no-color.org)). Plain mode also swaps the context-window block characters (`▮`/`▯`) for an ASCII `[##  ]` bar so output pipes cleanly into tmux / `jq` / `less`.
@@ -50,6 +53,7 @@ Initial release.
 - `node --test` unit suite (19 tests) covering formatting, pricing, telemetry parsing, and aggregation.
 - GitHub Actions CI matrix: Node 18 / 20 / 22 on Ubuntu / macOS / Windows.
 
-[Unreleased]: https://github.com/abhi-singhs/copilot-token-meter/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/abhi-singhs/copilot-token-meter/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/abhi-singhs/copilot-token-meter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/abhi-singhs/copilot-token-meter/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/abhi-singhs/copilot-token-meter/releases/tag/v0.1.0
