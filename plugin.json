@@ -1,6 +1,6 @@
 {
   "name": "copilot-token-meter",
-  "description": "Live token meter for GitHub Copilot CLI. Tracks input/output/cache tokens and quota for every prompt and agent activity. Shows totals in the terminal title bar (always-visible footer), writes a status file for tmux/iTerm/Kitty integration, and exposes a /tokens slash command and a copilot-tokens CLI (status|watch|summary|top).",
+  "description": "Live token meter for GitHub Copilot CLI. Tracks input/output/cache tokens and quota for every prompt and agent activity. Shows totals in the terminal title bar (always-visible footer), renders a colourised line into Copilot CLI 1.0.52+'s custom status line via `statusLine.command`, writes a status file for tmux/iTerm/Kitty integration, and exposes a /tokens slash command and a copilot-tokens CLI (status|watch|summary|top|statusline).",
   "version": "0.2.0",
   "author": {
     "name": "Abhi Singh",

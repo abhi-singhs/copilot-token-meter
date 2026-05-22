@@ -20,6 +20,9 @@ shell-based snippets.
 - `tmux.conf` — tmux `status-right` fragment with optional context %.
 - `polybar.ini` — Polybar `custom/script` module for `.title`.
 - `iterm2-wezterm.md` — iTerm2 Script component and WezTerm Lua snippet.
+- `copilot-statusline.md` — `~/.copilot/config.json` snippet + walkthrough
+  that wires `copilot-tokens statusline` into Copilot CLI 1.0.52+'s `custom`
+  footer row.
 
 ## Install: tmux
 

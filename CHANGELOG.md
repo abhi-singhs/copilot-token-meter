@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Custom status line for Copilot CLI 1.0.52+.** New `copilot-tokens statusline` subcommand purpose-built for Copilot CLI's `statusLine.command` slot (the `custom` row in `/footer`). Reads the session JSON payload Copilot pipes in on stdin, joins it with the plugin's cached telemetry / repair data, and prints a compact ANSI-coloured line — `↑12.3k ↓45.6k ⟳88.0k ⊕5.1k 🧠1.2k · 📦42% · 7t/23🔧` — that drops straight into the Copilot footer alongside `directory`, `branch`, `effort`, `context-used`, and `quota`. Live context % is sourced from the payload's `context_window.current_context_used_percentage` (falling back to the plugin's events-derived estimate). All errors are swallowed so a misbehaving statusline never breaks Copilot's UI. Honours `--plain` / `NO_COLOR=1`.
+- `copilot-tokens statusline-command` companion subcommand that prints the exact absolute-path command string to paste into `~/.copilot/config.json` under `statusLine.command`.
+- `formatStatusLine(agg, payload, options)` helper in `lib/format.js` (with 6 new unit tests covering colour toggling, payload-vs-aggregator preference, zero-suppression, and bounds clamping).
+- `examples/copilot-statusline.md` ready-to-merge config snippet + walkthrough for `~/.copilot/config.json`.
+- README "As Copilot CLI's custom status line" section with the three-step wire-up and a note on running both the title-bar and footer-line surfaces side-by-side.
+
 ## [0.2.0] - 2026-05-20
 
 ### Added

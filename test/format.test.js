@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { n, formatTokens, formatMs, pad, formatTitle, parseDuration } = require("../lib/format");
+const { n, formatTokens, formatMs, pad, formatTitle, formatStatusLine, parseDuration } = require("../lib/format");
 
 test("n coerces only finite numbers", () => {
   assert.equal(n(42), 42);
@@ -83,4 +83,87 @@ test("parseDuration rejects malformed input", () => {
   assert.equal(parseDuration("10x"), null);
   assert.equal(parseDuration("-5m"), null);
   assert.equal(parseDuration("5 m extra"), null);
+});
+
+test("formatStatusLine renders compact tokens line without colour", () => {
+  const agg = {
+    totals: {
+      inputTokens: 1234,
+      outputTokens: 4567,
+      cacheReadTokens: 88000,
+      cacheWriteTokens: 5100,
+      reasoningTokens: 1200,
+      turns: 7,
+      toolCalls: 23,
+      contextUtilization: 0.42,
+    },
+  };
+
+  assert.equal(
+    formatStatusLine(agg, null, { color: false }),
+    "↑1.2k ↓4.6k ⟳88.0k ⊕5.1k 🧠1.2k · 📦42% · 7t/23🔧",
+  );
+});
+
+test("formatStatusLine prefers Copilot payload context % over aggregator value", () => {
+  const agg = {
+    totals: {
+      inputTokens: 100, outputTokens: 200,
+      cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+      turns: 1, toolCalls: 0,
+      contextUtilization: 0.10,
+    },
+  };
+  const payload = {
+    context_window: { current_context_used_percentage: 85.6 },
+  };
+
+  const line = formatStatusLine(agg, payload, { color: false });
+  assert.equal(line.includes("📦86%"), true, "should round payload pct: " + line);
+  assert.equal(line.includes("📦10%"), false, "should ignore aggregator pct when payload present");
+});
+
+test("formatStatusLine omits zero-valued optional counters and turns/tools", () => {
+  const agg = {
+    totals: {
+      inputTokens: 50, outputTokens: 75,
+      cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+      turns: 0, toolCalls: 0,
+    },
+  };
+
+  assert.equal(
+    formatStatusLine(agg, null, { color: false }),
+    "↑50 ↓75",
+  );
+});
+
+test("formatStatusLine emits ANSI escapes when color enabled", () => {
+  const agg = {
+    totals: {
+      inputTokens: 10, outputTokens: 20,
+      cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+      turns: 0, toolCalls: 0,
+    },
+  };
+
+  const line = formatStatusLine(agg, null, { color: true });
+  assert.equal(line.includes("\x1b["), true, "should contain ANSI escapes: " + line);
+});
+
+test("formatStatusLine clamps context % to [0, 100]", () => {
+  const agg = { totals: { inputTokens: 0, outputTokens: 0, turns: 0, toolCalls: 0 } };
+
+  // Way over 100 from a buggy payload.
+  const high = formatStatusLine(agg, { context_window: { current_context_used_percentage: 500 } }, { color: false });
+  assert.equal(high.includes("📦100%"), true, "should clamp >100: " + high);
+
+  // Negative from a buggy payload.
+  const low = formatStatusLine(agg, { context_window: { current_context_used_percentage: -10 } }, { color: false });
+  assert.equal(low.includes("📦0%"), true, "should clamp <0: " + low);
+});
+
+test("formatStatusLine tolerates missing totals and payload entirely", () => {
+  assert.equal(formatStatusLine({}, null, { color: false }), "↑0 ↓0");
+  assert.equal(formatStatusLine(null, null, { color: false }), "↑0 ↓0");
 });

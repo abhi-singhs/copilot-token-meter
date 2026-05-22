@@ -7,15 +7,21 @@
 | Surface | How |
 |---|---|
 | **Always-visible "footer"** | The plugin hooks `sessionStart`, `userPromptSubmitted`, `postToolUse`, and `agentStop` and writes a one-line summary to your terminal title bar via OSC 2. Works in iTerm2, Kitty, Alacritty, WezTerm, Terminal.app, gnome-terminal, Windows Terminal. |
+| **Copilot CLI custom status line** | A `copilot-tokens statusline` subcommand renders a colourised one-liner that drops straight into Copilot CLI 1.0.52+'s `statusLine.command` slot (the `custom` row in `/footer` → *Configure Status Line*). Reads the Copilot stdin payload + the plugin's cached state, so the row stays in sync with the rest of the footer. |
 | **`/tokens` slash command** | Inside Copilot CLI, type `/tokens` for a multi-line breakdown — per-model, per-turn, with quota. |
-| **`copilot-tokens` CLI** | Companion CLI with `status`, `summary`, `watch`, `top`, `json`, `recompute` subcommands for use in a second pane / tmux / CI. |
+| **`copilot-tokens` CLI** | Companion CLI with `status`, `summary`, `watch`, `top`, `json`, `recompute`, `statusline`, `statusline-command` subcommands for use in a second pane / tmux / CI. |
 | **Status JSON for other tools** | `~/.copilot/state/token-meter/latest.json` is rewritten on every hook tick — point your tmux status bar, polybar, iTerm status, or VS Code status item at it. |
 
 ## Why a plugin (and not the built-in footer)?
 
-Copilot CLI's built-in footer (`settings.json` → `footer`) only supports a fixed set of toggles (`showModelEffort`, `showDirectory`, `showBranch`, `showContextWindow`, `showQuota`). There is no public API for plugins to inject custom footer items.
+Copilot CLI's built-in footer (`settings.json` → `footer`) only supports a fixed set of toggles (`showModelEffort`, `showDirectory`, `showBranch`, `showContextWindow`, `showQuota`, …). The newer `custom` row (Copilot CLI 1.0.52+) lets you point at a `statusLine.command`, but stops there: it doesn't aggregate, repair, or attribute tokens for you.
 
-This plugin works around that by piggy-backing on three stable contracts the CLI already exposes:
+This plugin layers two surfaces on top of that:
+
+- An OSC 2 terminal-title-bar writer driven by lifecycle hooks (always visible above the prompt, no Copilot CLI version required).
+- A `copilot-tokens statusline` subcommand built to be the `statusLine.command` target — it does the aggregation, the input-tokens-zero repair, and the per-tool attribution itself, and renders a compact, colourised one-liner.
+
+Both surfaces share the same data pipeline, which piggy-backs on four stable contracts the CLI already exposes:
 
 1. **Plugin lifecycle hooks** (`sessionStart`, `userPromptSubmitted`, `postToolUse`, `agentStop`).
 2. **`events.jsonl`** in `~/.copilot/session-state/<sessionId>/` — typed against `schemas/session-events.schema.json` — for turn / tool / message / model activity and the `assistant.message.outputTokens` field.
@@ -102,6 +108,10 @@ copilot-tokens top --limit 5         # only show the top 5
 copilot-tokens top --since 7d        # only sessions active in the last 7 days
 copilot-tokens json                  # raw status JSON (for scripting)
 copilot-tokens recompute             # force re-scan of the current session
+copilot-tokens statusline            # render Copilot CLI's custom status line
+                                     # (consumes Copilot payload JSON on stdin)
+copilot-tokens statusline-command    # print the path string to paste into
+                                     # ~/.copilot/config.json statusLine.command
 copilot-tokens --plain summary       # no ANSI colour (also honours NO_COLOR=1)
 ```
 
@@ -114,6 +124,45 @@ set -g status-right '#(cat ~/.copilot/state/token-meter/latest.json 2>/dev/null 
 ```
 
 See [`examples/tmux.conf`](./examples/tmux.conf) for a fuller version that also surfaces context-window utilisation.
+
+### As Copilot CLI's custom status line
+
+Copilot CLI 1.0.52+ ships a built-in *Configure Status Line* menu (open it with `/footer`) that includes a `custom` row sourced from a `statusLine.command` you configure. When enabled, Copilot spawns the command on every state change, pipes its session JSON to it on stdin, and renders the command's stdout as a footer row beneath the built-in items.
+
+The plugin exposes a `copilot-tokens statusline` subcommand purpose-built for this contract. It reads Copilot's stdin payload, joins it with the plugin's cached telemetry, and prints a single ANSI-coloured line like:
+
+```
+↑12.3k ↓45.6k ⟳88.0k ⊕5.1k 🧠1.2k · 📦42% · 7t/23🔧
+```
+
+To wire it up:
+
+1. Get the absolute command path:
+
+   ```bash
+   copilot-tokens statusline-command
+   # → "/Users/you/.copilot/installed-plugins/_direct/abhi-singhs--copilot-token-meter/bin/copilot-tokens statusline"
+   ```
+
+2. Add it to `~/.copilot/config.json`:
+
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "/absolute/path/to/copilot-tokens statusline",
+       "padding": 0
+     }
+   }
+   ```
+
+   (See [`examples/copilot-statusline.md`](./examples/copilot-statusline.md) for a ready-to-merge snippet and full walkthrough.)
+
+3. Open the Copilot CLI configurator with `/footer`, scroll to `custom`, and press `enter` to toggle it on. Save with `esc`.
+
+The command is fail-safe: any error (missing cache, malformed payload, unreadable state file) is swallowed and the row renders empty rather than breaking Copilot's UI. Honours `NO_COLOR=1` and `--plain` / `--no-color` for terminals that don't render ANSI in the footer.
+
+> **Why both this and the terminal title bar?** The title bar is always visible above your shell prompt and works in any terminal that honours OSC 2; the custom status line lives inside Copilot CLI's footer so it sits next to `directory`, `branch`, `effort`, `context-used`, and `quota`. Pick whichever surface fits your workflow — running both is fine and incurs no extra cost.
 
 ### From iTerm2 / WezTerm status bar
 

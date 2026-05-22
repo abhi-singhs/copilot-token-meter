@@ -45,6 +45,7 @@ The `summary` subcommand already prints a well-formatted, coloured block — pas
 ## Notes
 
 - The plugin's `postToolUse` hook keeps the terminal title bar updated with `↑in ↓out ⟳cache ⊕write 📦N% Nt/M🔧` after every tool call, so the user sees a live "footer" without needing to invoke this skill.
+- On Copilot CLI 1.0.52+, the plugin also ships a `copilot-tokens statusline` subcommand designed for the CLI's `statusLine.command` slot (the `custom` row in `/footer`). Suggest it when the user wants the token line *inside* the Copilot footer rather than in the terminal title bar — setup instructions are in the README.
 - The `summary` view also breaks tokens down **per tool** (which tool burned the most input/cache) using proportional attribution: each batched tool call gets a `1/N` share of the next API call's prompt-fold tokens.
 - This skill is read-only; it never modifies session state.
 - This plugin does not estimate USD cost. For authoritative billing and quota information, direct users to `/usage` inside Copilot CLI.

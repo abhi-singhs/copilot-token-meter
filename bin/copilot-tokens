@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 // copilot-tokens: companion CLI for the copilot-token-meter plugin.
 //
-//   copilot-tokens status     One-line summary (default).
-//   copilot-tokens summary    Multi-line breakdown.
-//   copilot-tokens watch      Live tail; refreshes every second.
-//   copilot-tokens top        Top sessions by total tokens, all time.
-//   copilot-tokens json       Dump the raw status JSON (for scripting).
-//   copilot-tokens recompute  Re-aggregate the current session right now.
+//   copilot-tokens status              One-line summary (default).
+//   copilot-tokens summary             Multi-line breakdown.
+//   copilot-tokens watch               Live tail; refreshes every second.
+//   copilot-tokens top                 Top sessions by total tokens, all time.
+//   copilot-tokens json                Dump the raw status JSON (for scripting).
+//   copilot-tokens recompute           Re-aggregate the current session right now.
+//   copilot-tokens statusline          Render the Copilot CLI custom status line
+//                                      (reads payload JSON on stdin, prints one
+//                                      ANSI-coloured line with NO trailing
+//                                      newline).
+//   copilot-tokens statusline-command  Print the exact command string to paste
+//                                      into ~/.copilot/config.json statusLine.command.
 
 "use strict";
 
@@ -17,7 +23,7 @@ const os   = require("os");
 const { readJsonl }              = require("../lib/io");
 const { aggregate }              = require("../lib/aggregate");
 const { loadTelemetryUsage }     = require("../lib/telemetry");
-const { formatTokens, formatMs, pad, formatTitle, parseDuration } = require("../lib/format");
+const { formatTokens, formatMs, pad, formatTitle, formatStatusLine, parseDuration } = require("../lib/format");
 
 const HOME      = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
 const STATE_DIR = path.join(HOME, "state", "token-meter");
@@ -459,22 +465,105 @@ function cmdTop(rawArgv) {
   }
 }
 
+// Read Copilot CLI's statusLine.command payload from stdin if available. The
+// CLI spawns this command on every state change with a JSON object on stdin:
+// { cwd, session_id, session_name, transcript_path, model:{id,display_name},
+//   workspace, remote, version, cost:{...}, context_window:{...} }.
+// Returns null when stdin is a TTY (interactive run) or the data is missing
+// or malformed — we never throw; the status line must degrade gracefully.
+function readStdinPayloadIfAny() {
+  try {
+    if (process.stdin.isTTY) return null;
+    const raw = fs.readFileSync(0, "utf8");
+    if (!raw || !raw.trim().startsWith("{")) return null;
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+// Render the Copilot CLI custom status line. Designed to be:
+//   - Fast: prefers the cached <sessionId>.json over re-aggregating, so the
+//     hot path is a single small JSON read.
+//   - Safe: any error is swallowed and we exit 0 with empty output so the
+//     Copilot footer never breaks.
+//   - Smart: uses Copilot's own stdin payload (when available) for the live
+//     context % and falls back to the plugin's events-derived value.
+//
+// Output is a single line WITHOUT a trailing newline so Copilot renders it
+// on exactly one footer row.
+function cmdStatusline() {
+  try {
+    const payload = readStdinPayloadIfAny();
+    const sessionId = (payload && payload.session_id) || mostRecentSessionId();
+    let st = null;
+    if (sessionId) {
+      const cached = path.join(STATE_DIR, sessionId + ".json");
+      if (fs.existsSync(cached)) {
+        try { st = JSON.parse(fs.readFileSync(cached, "utf8")); } catch (_) {}
+      }
+    }
+    if (!st) {
+      const latest = path.join(STATE_DIR, "latest.json");
+      if (fs.existsSync(latest)) {
+        try { st = JSON.parse(fs.readFileSync(latest, "utf8")); } catch (_) {}
+      }
+    }
+    if (!st && payload && payload.context_window) {
+      const w = payload.context_window;
+      st = {
+        totals: {
+          inputTokens:      w.total_input_tokens       || 0,
+          outputTokens:     w.total_output_tokens      || 0,
+          cacheReadTokens:  w.total_cache_read_tokens  || 0,
+          cacheWriteTokens: w.total_cache_write_tokens || 0,
+          reasoningTokens:  w.total_reasoning_tokens   || 0,
+          turns:            0,
+          toolCalls:        0,
+        },
+      };
+    }
+    if (!st) return;
+    // The status line output is captured by Copilot CLI (not a TTY), so the
+    // global USE_COLOR check would disable colour. Copilot's footer renderer
+    // does interpret ANSI escapes, so honour --plain / NO_COLOR explicitly
+    // but otherwise force colour on for this subcommand.
+    const wantColor = !GLOBAL_FLAGS.plain && !process.env.NO_COLOR;
+    const line = formatStatusLine(st, payload, { color: wantColor });
+    process.stdout.write(line);
+  } catch (_) {
+    // Statusline failures must NEVER break the Copilot UI. Swallow and exit 0.
+  }
+}
+
+// Print the exact command string to drop into ~/.copilot/config.json under
+// `statusLine.command`. Helpful for users who copy-paste rather than running
+// the in-CLI configurator.
+function cmdStatuslineCommand() {
+  const binPath = path.resolve(__filename);
+  process.stdout.write(JSON.stringify(binPath + " statusline") + "\n");
+}
+
 function cmdHelp() {
   console.log([
     c("bold", "copilot-tokens") + " — live token meter for GitHub Copilot CLI",
     "",
     "Usage:",
-    "  copilot-tokens [status]     One-line summary of the current session",
-    "  copilot-tokens summary      Multi-line breakdown (per model, per tool, per turn)",
-    "  copilot-tokens watch        Live updating dashboard (refreshes every 1s)",
-    "  copilot-tokens top          Top sessions by total tokens across all history",
-    "                              [--limit N] [--since 7d|24h|30m]",
-    "  copilot-tokens json         Emit the raw status JSON",
-    "  copilot-tokens recompute    Re-scan the current session and refresh state",
-    "  copilot-tokens help         Show this help",
+    "  copilot-tokens [status]            One-line summary of the current session",
+    "  copilot-tokens summary             Multi-line breakdown (per model, per tool, per turn)",
+    "  copilot-tokens watch               Live updating dashboard (refreshes every 1s)",
+    "  copilot-tokens top                 Top sessions by total tokens across all history",
+    "                                     [--limit N] [--since 7d|24h|30m]",
+    "  copilot-tokens json                Emit the raw status JSON",
+    "  copilot-tokens recompute           Re-scan the current session and refresh state",
+    "  copilot-tokens statusline          Render the Copilot CLI custom status line",
+    "                                     (reads Copilot payload JSON from stdin)",
+    "  copilot-tokens statusline-command  Print the command string to drop into",
+    "                                     ~/.copilot/config.json → statusLine.command",
+    "  copilot-tokens help                Show this help",
     "",
     "Global flags:",
-    "  --plain, --no-color         Disable ANSI colour (also honoured: NO_COLOR=1)",
+    "  --plain, --no-color                Disable ANSI colour (also honoured: NO_COLOR=1)",
     "",
     "State files:",
     "  " + path.join(STATE_DIR, "latest.json"),
@@ -486,15 +575,17 @@ function cmdHelp() {
 
 const cmd = (SUBARGV[0] || "status").toLowerCase();
 switch (cmd) {
-  case "status":    cmdStatus(); break;
-  case "summary":   cmdSummary(); break;
-  case "watch":     cmdWatch(); break;
-  case "top":       cmdTop(SUBARGV.slice(1)); break;
-  case "json":      cmdJson(); break;
-  case "recompute": cmdRecompute(); break;
+  case "status":             cmdStatus(); break;
+  case "summary":            cmdSummary(); break;
+  case "watch":              cmdWatch(); break;
+  case "top":                cmdTop(SUBARGV.slice(1)); break;
+  case "json":               cmdJson(); break;
+  case "recompute":          cmdRecompute(); break;
+  case "statusline":         cmdStatusline(); break;
+  case "statusline-command": cmdStatuslineCommand(); break;
   case "help":
   case "--help":
-  case "-h":        cmdHelp(); break;
+  case "-h":                 cmdHelp(); break;
   default:
     console.error("Unknown command: " + cmd);
     cmdHelp();
