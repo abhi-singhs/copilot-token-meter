@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Hook no longer crashes with `MODULE_NOT_FOUND` when invoked from VS Code (or any host that runs hooks with cwd ≠ plugin dir).** `hooks.json` used to invoke `node ./bin/token-meter.js`, which only resolved correctly because Copilot CLI sets cwd to the plugin directory. VS Code's Copilot chat agent runs the hook with cwd = workspace folder, so Node looked for `./bin/token-meter.js` under the user's project and failed with `Error: Cannot find module '/path/to/workspace/bin/token-meter.js'`. The hook command now resolves an absolute script path from `$COPILOT_PLUGIN_ROOT` (exported by Copilot CLI 1.0.56+) — falling back to `$CLAUDE_PLUGIN_ROOT`, `$PLUGIN_ROOT`, and finally the standard direct-install path `~/.copilot/installed-plugins/_direct/abhi-singhs--copilot-token-meter`. The bash and PowerShell forms also guard with a `[ -f "$S" ]` / `Test-Path` check and silently `exit 0` when the script can't be located, so a misplaced install never blocks the agent. `hooks.log` now also records the resolved `root=` so install issues are easy to diagnose.
+
 ## [0.2.1] - 2026-05-22
 
 ### Fixed

@@ -38,9 +38,13 @@ function safeMain() {
   } catch (_) {}
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
+    const root = process.env.COPILOT_PLUGIN_ROOT
+      || process.env.CLAUDE_PLUGIN_ROOT
+      || process.env.PLUGIN_ROOT
+      || "";
     fs.appendFileSync(
       path.join(STATE_DIR, "hooks.log"),
-      `[${new Date().toISOString()}] hook=${hookName} pid=${process.pid} cwd=${process.cwd()}\n`
+      `[${new Date().toISOString()}] hook=${hookName} pid=${process.pid} cwd=${process.cwd()} root=${root}\n`
     );
   } catch (_) {}
   try { main(); }

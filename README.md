@@ -260,6 +260,10 @@ Pricing/context-window data is read lazily and cached for the lifetime of each h
 
 Check `~/.copilot/state/token-meter/errors.log`. The hook script is wrapped so any error is logged there and the process exits 0 — a hook failure never blocks Copilot CLI. If you see repeated errors, please file an issue with the relevant log excerpt and your Copilot CLI version.
 
+### `Cannot find module '.../bin/token-meter.js'` in VS Code
+
+Older versions of `hooks.json` invoked `node ./bin/token-meter.js`, which only worked because Copilot CLI sets the hook's working directory to the plugin folder. VS Code's Copilot chat agent uses the open workspace as the working directory instead, so the relative path resolves under your project (e.g. `~/Documents/my-project/bin/token-meter.js`) and Node throws `MODULE_NOT_FOUND`. `hooks.json` in 0.2.2+ resolves the script via `$COPILOT_PLUGIN_ROOT` (exported by Copilot CLI 1.0.56+, with fallbacks to `$CLAUDE_PLUGIN_ROOT`, `$PLUGIN_ROOT`, and the standard direct-install path). If you're on the older command, `copilot plugin update copilot-token-meter` (or re-install) picks up the new `hooks.json`.
+
 ### `copilot-tokens` colours are mangled in tmux / less / scripts
 
 Pass `--plain` (or `--no-color`), or set `NO_COLOR=1` in the environment. The context-window bar falls back to a plain-ASCII `[##  ]` indicator.

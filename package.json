@@ -1,6 +1,6 @@
 {
   "name": "copilot-token-meter",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Live token meter for GitHub Copilot CLI",
   "author": "Abhi Singh (https://github.com/abhi-singhs)",
