@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-05
+
 ### Fixed
-- **Hook no longer crashes with `MODULE_NOT_FOUND` when invoked from VS Code (or any host that runs hooks with cwd ≠ plugin dir).** `hooks.json` used to invoke `node ./bin/token-meter.js`, which only resolved correctly because Copilot CLI sets cwd to the plugin directory. VS Code's Copilot chat agent runs the hook with cwd = workspace folder, so Node looked for `./bin/token-meter.js` under the user's project and failed with `Error: Cannot find module '/path/to/workspace/bin/token-meter.js'`. The hook command now resolves an absolute script path from `$COPILOT_PLUGIN_ROOT` (exported by Copilot CLI 1.0.56+) — falling back to `$CLAUDE_PLUGIN_ROOT`, `$PLUGIN_ROOT`, and finally the standard direct-install path `~/.copilot/installed-plugins/_direct/abhi-singhs--copilot-token-meter`. The bash and PowerShell forms also guard with a `[ -f "$S" ]` / `Test-Path` check and silently `exit 0` when the script can't be located, so a misplaced install never blocks the agent. `hooks.log` now also records the resolved `root=` so install issues are easy to diagnose.
+- **Hooks now only run under Copilot CLI and never fire under other hosts (e.g. VS Code's Copilot chat agent or any non-CLI host).** Each hook in `hooks.json` now gates on `$COPILOT_PLUGIN_ROOT` (the Copilot-CLI-specific variable, exported by Copilot CLI 1.0.56+): if it is unset, the hook command immediately `exit 0`s without invoking Node. The script path is resolved directly from `$COPILOT_PLUGIN_ROOT/bin/token-meter.js` — the previous fallback chain (`$CLAUDE_PLUGIN_ROOT`, `$PLUGIN_ROOT`, and the hardcoded direct-install path) has been removed, since those caused the hook to run under hosts other than Copilot CLI. This also resolves the earlier `MODULE_NOT_FOUND` crash seen in VS Code, where hooks ran with cwd = workspace folder and Node couldn't locate `./bin/token-meter.js`. The bash and PowerShell forms still guard with a `[ -f "$S" ]` / `Test-Path` check so a misplaced install never blocks the agent.
 
 ## [0.2.1] - 2026-05-22
 

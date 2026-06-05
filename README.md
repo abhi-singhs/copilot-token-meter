@@ -260,9 +260,9 @@ Pricing/context-window data is read lazily and cached for the lifetime of each h
 
 Check `~/.copilot/state/token-meter/errors.log`. The hook script is wrapped so any error is logged there and the process exits 0 — a hook failure never blocks Copilot CLI. If you see repeated errors, please file an issue with the relevant log excerpt and your Copilot CLI version.
 
-### `Cannot find module '.../bin/token-meter.js'` in VS Code
+### Hooks running (or erroring) under VS Code or another non-CLI host
 
-Older versions of `hooks.json` invoked `node ./bin/token-meter.js`, which only worked because Copilot CLI sets the hook's working directory to the plugin folder. VS Code's Copilot chat agent uses the open workspace as the working directory instead, so the relative path resolves under your project (e.g. `~/Documents/my-project/bin/token-meter.js`) and Node throws `MODULE_NOT_FOUND`. `hooks.json` in 0.2.2+ resolves the script via `$COPILOT_PLUGIN_ROOT` (exported by Copilot CLI 1.0.56+, with fallbacks to `$CLAUDE_PLUGIN_ROOT`, `$PLUGIN_ROOT`, and the standard direct-install path). If you're on the older command, `copilot plugin update copilot-token-meter` (or re-install) picks up the new `hooks.json`.
+The hooks are meant for Copilot CLI only. As of 0.2.2, every hook in `hooks.json` gates on `$COPILOT_PLUGIN_ROOT` (set by Copilot CLI 1.0.56+) and immediately exits without doing anything when that variable is unset — so the meter never fires under VS Code's Copilot chat agent or any other host. This also fixes the older `MODULE_NOT_FOUND` crash, where a non-CLI host ran the hook with cwd = workspace folder and Node couldn't resolve `./bin/token-meter.js`. If you're on an older `hooks.json`, run `copilot plugin update copilot-token-meter` (or re-install) to pick up the new gating.
 
 ### `copilot-tokens` colours are mangled in tmux / less / scripts
 
