@@ -1,5 +1,8 @@
 # copilot-token-meter
 
+> [!WARNING]
+> **This project is archived.** Live token / cache metering is now natively supported by the GitHub Copilot CLI (built-in footer, `statusLine.command`, and quota display), so this plugin is no longer maintained. The repository remains available for reference.
+
 > Live token meter for **GitHub Copilot CLI**. Shows input / output / cache tokens and agent activity for every prompt — in your terminal title bar, in a live dashboard, and via a `/tokens` slash command.
 
 ## What you get
